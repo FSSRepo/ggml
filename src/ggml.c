@@ -7485,7 +7485,7 @@ GGML_API struct ggml_tensor * ggml_conv_1d(
     result = ggml_reshape_3d(ctx,
             ggml_mul_mat(ctx,
             ggml_reshape_2d(ctx, result, result->ne[0],  (result->ne[2] * result->ne[1])), // [N, OL, IC * K] => [N*OL, IC * K]
-            ggml_reshape_2d(ctx, a, (a->ne[0] * a->ne[1]),  a->ne[2])), // [OC，IC, K] => [OC, IC * K]
+            ggml_reshape_2d(ctx, a, result->ne[0],  a->ne[2])), // [OC，IC, K] => [OC, IC * K]
             result->ne[1],  a->ne[2], result->ne[2]); // [N, OC, OL]
     return result;
 }
@@ -7614,7 +7614,7 @@ struct ggml_tensor * ggml_conv_2d(
     result = ggml_reshape_4d(ctx,
             ggml_mul_mat(ctx,
             ggml_reshape_2d(ctx, result, result->ne[0],  result->ne[3] * result->ne[2] * result->ne[1]), // [N, OH, OW, IC * KH * KW] => [N*OH*OW, IC * KH * KW]
-            ggml_reshape_2d(ctx, a, (a->ne[0] * a->ne[1] * a->ne[2]),  a->ne[3])), // [OC，IC, KH, KW] => [OC, IC * KH * KW]
+            ggml_reshape_2d(ctx, a, result->ne[0],  a->ne[3])), // [OC，IC, KH, KW] => [OC, IC * KH * KW]
             result->ne[1], result->ne[2], a->ne[3], result->ne[3]); // [N, OC, OH, OW]
     return result;
 }
