@@ -603,6 +603,69 @@ static __global__ void norm_f32(const float * x, float * dst, const int ncols) {
     }
 }
 
+
+__global__ void group_norm_f32(const float  *x,float *dst, int group_size, int n_elements, int num_iters) {
+        const float eps = 1e-5f;
+	    const int start_data = blockIdx.x * group_size;
+
+        __shared__ float data[4];
+
+        if(threadIdx.x == 0) {
+                data[0] = 0.0f; // sum
+                data[1] = 0.0f; // mean
+                data[2] = 0.0f; // sum2
+                data[3] = 0.0f; // scale
+        }
+
+        int it = 0;
+        __syncthreads();
+        while(it < num_iters) {
+                int virtual_idx = threadIdx.x + it * blockDim.x;
+                if(virtual_idx >= group_size) {
+                        break;
+                }
+                int index = start_data + virtual_idx;
+                if(index >= n_elements) {
+                        return;
+                }
+                atomicAdd(data, x[index]); // add sum
+                it++;
+        }
+
+        if(threadIdx.x == 0) {
+                atomicAdd(data + 1, data[0] / group_size); // calculate mean
+        }
+
+        it = 0;
+        __syncthreads();
+        while(it < num_iters) {
+                int virtual_idx = threadIdx.x + it * blockDim.x;
+                if(virtual_idx >= group_size) {
+                        break;
+                }
+                int index = start_data + virtual_idx;
+                float v = x[index] - data[1]; // mean
+                dst[index] = v;
+                atomicAdd(data + 2, v * v); // add sum2
+                it++;
+        }
+
+        if(threadIdx.x == 0) {
+                atomicAdd(data + 3, 1.0f / sqrtf(data[2] / group_size + eps)); // calculate scale
+        }
+
+        it = 0;
+        __syncthreads();
+        while(it < num_iters) {
+                int virtual_idx = threadIdx.x + it * blockDim.x;
+                if(virtual_idx >= group_size) {
+                        break;
+                }
+                dst[start_data + virtual_idx] *= data[3];
+                it++;
+        }
+}
+
 static __device__ __forceinline__ float warp_reduce_sum(float x) {
 #pragma unroll
     for (int mask = 16; mask > 0; mask >>= 1) {
@@ -4701,6 +4764,12 @@ static void norm_f32_cuda(const float * x, float * dst, const int ncols, const i
     }
 }
 
+static void group_norm_f32_cuda(const float * x, float * dst, const int num_groups, const int group_size, const int k, cudaStream_t stream) {
+    int max_block_size = group_size > CUDA_REPEAT_BLOCK_SIZE ? CUDA_REPEAT_BLOCK_SIZE : group_size;
+    int num_iters = max_block_size == group_size ? 1 : ((k + max_block_size - 1) / max_block_size);
+    group_norm_f32<<<num_groups, max_block_size, 0, stream>>>(x, dst, group_size, k, num_iters);
+}
+
 static void rms_norm_f32_cuda(const float * x, float * dst, const int ncols, const int nrows, const float eps, cudaStream_t stream) {
     GGML_ASSERT(ncols % WARP_SIZE == 0);
     if (ncols < 1024) {
@@ -6110,6 +6179,24 @@ inline void ggml_cuda_op_norm(
     (void) src1_dd;
 }
 
+inline void ggml_cuda_op_group_norm(
+    const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst,
+    const float * src0_dd, const float * src1_dd, float * dst_dd, const cudaStream_t & main_stream) {
+
+    GGML_ASSERT(src0->type == GGML_TYPE_F32);
+    GGML_ASSERT( dst->type == GGML_TYPE_F32);
+
+    int num_groups = dst->op_params[0];
+
+    int group_size = src0->ne[0] * src0->ne[1] * ((src0->ne[2] + num_groups - 1) / num_groups);
+
+    group_norm_f32_cuda(src0_dd, dst_dd, num_groups, group_size, ggml_nelements(src0), main_stream);
+
+    (void) src1;
+    (void) dst;
+    (void) src1_dd;
+}
+
 inline void ggml_cuda_op_rms_norm(
     const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst,
     const float * src0_dd, const float * src1_dd, float * dst_dd, const cudaStream_t & main_stream) {
@@ -7143,6 +7230,10 @@ static void ggml_cuda_norm(const ggml_tensor * src0, const ggml_tensor * src1, g
     ggml_cuda_op_flatten(src0, src1, dst, ggml_cuda_op_norm);
 }
 
+static void ggml_cuda_group_norm(const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
+    ggml_cuda_op_flatten(src0, src1, dst, ggml_cuda_op_group_norm);
+}
+
 static void ggml_cuda_rms_norm(const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
     ggml_cuda_op_flatten(src0, src1, dst, ggml_cuda_op_rms_norm);
 }
@@ -7847,6 +7938,8 @@ bool ggml_cuda_compute_forward(struct ggml_compute_params * params, struct ggml_
             } break;
         case GGML_OP_NORM:
             func = ggml_cuda_norm;
+        case GGML_OP_GROUP_NORM:
+            func = ggml_cuda_group_norm;
             break;
         case GGML_OP_RMS_NORM:
             func = ggml_cuda_rms_norm;
