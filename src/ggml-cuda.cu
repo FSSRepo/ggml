@@ -424,6 +424,7 @@ static_assert(sizeof(block_q6_K) == sizeof(ggml_fp16_t) + 13*QK_K/16, "wrong q6_
 #define CUDA_QUANTIZE_BLOCK_SIZE 256
 #define CUDA_DEQUANTIZE_BLOCK_SIZE 256
 #define CUDA_GET_ROWS_BLOCK_SIZE 256
+#define CUDA_REPEAT_BLOCK_SIZE 256
 
 // dmmv = dequantize_mul_mat_vec
 #ifndef GGML_CUDA_DMMV_X
@@ -477,6 +478,25 @@ static size_t g_scratch_size = 0; // disabled by default
 static size_t g_scratch_offset = 0;
 
 static cublasHandle_t g_cublas_handles[GGML_CUDA_MAX_DEVICES] = {nullptr};
+
+__global__ void repeat_f32(const float* x, float* dst, int ne_rb, int ne_id, int source_dim, int num_iters) {
+    int it = 0;
+    const int block_copy = ne_rb * ne_id;
+	while(it < num_iters) {
+		int i0 = threadIdx.x + it * blockDim.x;
+		if(i0 >= ne_rb) {
+            return;
+		}
+	    for(int i = 0; i < ne_id; i++) {
+            int dst_index = blockIdx.x * block_copy + i0 * ne_id + i;
+            int src_index =
+                source_dim == 0 ? (dst_index % gridDim.x) :
+                source_dim == 1 ? (dst_index / ne_rb) % gridDim.x : (dst_index / block_copy);
+                dst[dst_index] = x[src_index];
+        }
+		it++;
+	}
+}
 
 static __global__ void add_f32(const float * x, const float * y, float * dst, const int kx, const int ky) {
     const int i = blockDim.x*blockIdx.x + threadIdx.x;
@@ -4633,6 +4653,7 @@ static void get_rows_cuda(const void * x, const int32_t * y, float * dst, const 
     k_get_rows<qk, qr, dq><<<block_nums, block_dims, 0, stream>>>(x, y, dst, ncols);
 }
 
+
 static void add_f32_cuda(const float * x, const float * y, float * dst, const int kx, const int ky, cudaStream_t stream) {
     const int num_blocks = (kx + CUDA_ADD_BLOCK_SIZE - 1) / CUDA_ADD_BLOCK_SIZE;
     add_f32<<<num_blocks, CUDA_ADD_BLOCK_SIZE, 0, stream>>>(x, y, dst, kx, ky);
@@ -4661,6 +4682,12 @@ static void silu_f32_cuda(const float * x, float * dst, const int k, cudaStream_
 static void gelu_quick_f32_cuda(const float * x, float * dst, const int k, cudaStream_t stream) {
     const int num_blocks = (k + CUDA_GELU_BLOCK_SIZE - 1) / CUDA_GELU_BLOCK_SIZE;
     gelu_quick_f32<<<num_blocks, CUDA_GELU_BLOCK_SIZE, 0, stream>>>(x, dst, k);
+}
+
+static void repeat_f32_cuda(const float * x, float * dst, const int ne_sd, const int ne_rb, const int ne_id, const int source_dim, const int k, cudaStream_t stream) {
+    int max_block_size = k > CUDA_REPEAT_BLOCK_SIZE ? CUDA_REPEAT_BLOCK_SIZE : k;
+    int num_iters = max_block_size == k ? 1 : ((k + max_block_size - 1) / max_block_size);
+    repeat_f32<<<ne_sd, max_block_size, 0, stream>>>(x, dst, ne_rb, ne_id, source_dim, num_iters);
 }
 
 static void norm_f32_cuda(const float * x, float * dst, const int ncols, const int nrows, cudaStream_t stream) {
@@ -5850,6 +5877,45 @@ static cudaError_t ggml_cuda_cpy_tensor_2d(
 static void ggml_cuda_op_repeat(
     const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst,
     const float * src0_d, const float * src1_d, float * dst_d, const cudaStream_t & stream) {
+
+    int source_dim = -1;
+
+    for(int i = 0; i < 4; i++) {
+        if(src0->ne[i] > 1) {
+            if(source_dim == -1) {
+                source_dim = i;
+            } else {
+                source_dim = -1;
+                break;
+            }
+        }
+    }
+
+    if(source_dim != -1) { // repeat optimized for stable-diffusion
+        GGML_ASSERT(dst->ne[source_dim] == src0->ne[source_dim]);
+        int nr[4] = {0, 0, 0, 0};
+        for(int i = 0; i < 4; i++) {
+            nr[i] = (dst->ne[i] / src0->ne[i]);
+        }
+        int max_repeat = 0;
+        int repeat_block_dim = -1;
+        int internal_dim = 0;
+        for(int i = 0; i < 3; i++) {
+            if(nr[i] == 1) {
+                continue;
+            }
+            if(nr[i] > max_repeat && repeat_block_dim == -1) {
+                max_repeat = nr[i];
+                repeat_block_dim = i;
+            }
+            if(repeat_block_dim != -1) {
+                internal_dim = i != repeat_block_dim ? i : -1;
+            }
+        }
+        repeat_f32_cuda(src0_d, dst_d, dst->ne[source_dim], dst->ne[repeat_block_dim], dst->ne[internal_dim], source_dim, max_repeat, stream);
+        return;
+    }
+
     // guaranteed to be an integer due to the check in ggml_can_repeat
     const int64_t ne0 = dst->ne[0];
     const int64_t ne1 = dst->ne[1];
