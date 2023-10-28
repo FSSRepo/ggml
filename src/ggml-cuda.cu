@@ -507,6 +507,18 @@ static __global__ void add_f32(const float * x, const float * y, float * dst, co
     dst[i] = x[i] + y[i%ky];
 }
 
+__global__ void concat_f32(const float  *x,const float  *y, float *dst, int ne02) {
+    // operation
+	int offset_dst = threadIdx.x + blockIdx.z * blockDim.x + blockIdx.y * blockDim.x * gridDim.z + blockIdx.x * blockDim.x * gridDim.z * gridDim.y;
+	if (blockIdx.y < ne02) { // src0
+		int offset_src =  threadIdx.x + blockIdx.z * blockDim.x + blockIdx.y * blockDim.x *  gridDim.z + blockIdx.x * blockDim.x *  gridDim.z * ne02;
+                dst[offset_dst] = x[offset_src];
+	} else {
+		int offset_src =  threadIdx.x + blockIdx.z * blockDim.x + (blockIdx.y - ne02) * blockDim.x *  gridDim.z + blockIdx.x * blockDim.x *  gridDim.z * ne02;
+                dst[offset_dst] = y[offset_src];
+	}
+}
+
 static __global__ void add_f16_f32_f16(const half * x, const float * y, half * dst, const int k) {
     const int i = blockDim.x*blockIdx.x + threadIdx.x;
 
@@ -4722,6 +4734,12 @@ static void add_f32_cuda(const float * x, const float * y, float * dst, const in
     add_f32<<<num_blocks, CUDA_ADD_BLOCK_SIZE, 0, stream>>>(x, y, dst, kx, ky);
 }
 
+static void concat_f32_cuda(const float * x, const float * y, float * dst, const int ne0, int ne1, int ne2, const int ne3, int ne02, cudaStream_t stream) {
+    dim3 blockDim(ne3, ne2, ne1);
+    GGML_ASSERT(ne0 <= 1024);
+    concat_f32<<<blockDim, ne0, 0, stream>>>(x, y, dst, ne02);
+}
+
 static void add_f16_f32_f16_cuda(const half * x, const float * y, half * dst, const int k, cudaStream_t stream) {
     const int num_blocks = (k + CUDA_ADD_BLOCK_SIZE - 1) / CUDA_ADD_BLOCK_SIZE;
     add_f16_f32_f16<<<num_blocks, CUDA_ADD_BLOCK_SIZE, 0, stream>>>(x, y, dst, k);
@@ -6107,6 +6125,21 @@ inline void ggml_cuda_op_add(
     (void) dst;
 }
 
+
+inline void ggml_cuda_op_concat(
+    const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst,
+    const float * src0_dd, const float * src1_dd, float * dst_dd, const cudaStream_t & main_stream) {
+
+    GGML_ASSERT(src0->type == GGML_TYPE_F32);
+    GGML_ASSERT(src1->type == GGML_TYPE_F32);
+    GGML_ASSERT(dst->type == GGML_TYPE_F32);
+
+    concat_f32_cuda(src0_dd, src1_dd, dst_dd, dst->ne[0], dst->ne[1], dst->ne[2], dst->ne[3], src0->ne[2], main_stream);
+
+    (void) src1;
+    (void) dst;
+}
+
 inline void ggml_cuda_op_mul(
     const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst,
     const float * src0_dd, const float * src1_dd, float * dst_dd, const cudaStream_t & main_stream) {
@@ -7213,6 +7246,10 @@ static void ggml_cuda_add(const ggml_tensor * src0, const ggml_tensor * src1, gg
     ggml_cuda_op_flatten(src0, src1, dst, ggml_cuda_op_add);
 }
 
+static void ggml_cuda_concat(const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
+    ggml_cuda_op_flatten(src0, src1, dst, ggml_cuda_op_concat);
+}
+
 static void ggml_cuda_mul(const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
     ggml_cuda_op_flatten(src0, src1, dst, ggml_cuda_op_mul);
 }
@@ -7921,6 +7958,8 @@ bool ggml_cuda_compute_forward(struct ggml_compute_params * params, struct ggml_
             break;
         case GGML_OP_ADD:
             func = ggml_cuda_add;
+        case GGML_OP_CONCAT:
+            func = ggml_cuda_concat;
             break;
         case GGML_OP_MUL:
             func = ggml_cuda_mul;
