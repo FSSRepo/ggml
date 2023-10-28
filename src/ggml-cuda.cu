@@ -604,7 +604,7 @@ static __global__ void norm_f32(const float * x, float * dst, const int ncols) {
 }
 
 __global__ void group_norm_f32(const float  *x,float *dst, int group_size, int n_elements, int num_iters) {
-        const float eps = 1e-5f;
+        const float eps = 1e-6f;
 	    const int start_data = blockIdx.x * group_size;
 
         __shared__ float data[4];
