@@ -4767,7 +4767,7 @@ static void norm_f32_cuda(const float * x, float * dst, const int ncols, const i
 static void group_norm_f32_cuda(const float * x, float * dst, const int num_groups, const int group_size, const int k, cudaStream_t stream) {
     int max_block_size = group_size > CUDA_REPEAT_BLOCK_SIZE ? CUDA_REPEAT_BLOCK_SIZE : group_size;
     int num_iters = max_block_size == group_size ? 1 : ((k + max_block_size - 1) / max_block_size);
-    group_norm_f32<<<num_groups, max_block_size, 0, stream>>>(x, dst, group_size, k, num_iters);
+    group_norm_f32<<<num_groups, max_block_size, 4 * sizeof(float), stream>>>(x, dst, group_size, k, num_iters);
 }
 
 static void rms_norm_f32_cuda(const float * x, float * dst, const int ncols, const int nrows, const float eps, cudaStream_t stream) {
@@ -5948,7 +5948,7 @@ static void ggml_cuda_op_repeat(
     const float * src0_d, const float * src1_d, float * dst_d, const cudaStream_t & stream) {
 
     int source_dim = -1;
-
+    bool same_shape = true;
     for(int i = 0; i < 4; i++) {
         if(src0->ne[i] > 1) {
             if(source_dim == -1) {
@@ -5958,9 +5958,12 @@ static void ggml_cuda_op_repeat(
                 break;
             }
         }
+        if(same_shape) {
+            same_shape = src0->ne[i] == dst->ne[i];
+        }
     }
 
-    if(source_dim != -1) { // repeat optimized for stable-diffusion
+    if(source_dim != -1 && !same_shape) { // repeat optimized for stable-diffusion
         GGML_ASSERT(dst->ne[source_dim] == src0->ne[source_dim]);
         int nr[4] = {0, 0, 0, 0};
         for(int i = 0; i < 4; i++) {
@@ -5978,7 +5981,7 @@ static void ggml_cuda_op_repeat(
                 repeat_block_dim = i;
             }
             if(repeat_block_dim != -1) {
-                internal_dim = i != repeat_block_dim ? i : -1;
+                internal_dim = i != repeat_block_dim ? i : 2;
             }
         }
         repeat_f32_cuda(src0_d, dst_d, dst->ne[source_dim], dst->ne[repeat_block_dim], dst->ne[internal_dim], source_dim, max_repeat, stream);
@@ -7938,6 +7941,7 @@ bool ggml_cuda_compute_forward(struct ggml_compute_params * params, struct ggml_
             } break;
         case GGML_OP_NORM:
             func = ggml_cuda_norm;
+            break;
         case GGML_OP_GROUP_NORM:
             func = ggml_cuda_group_norm;
             break;
