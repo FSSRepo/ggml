@@ -654,66 +654,112 @@ static __global__ void norm_f32(const float * x, float * dst, const int ncols) {
     }
 }
 
-__global__ void group_norm_f32(const float  *x,float *dst, int group_size, int n_elements, int num_iters) {
-        const float eps = 1e-6f;
-	    const int start_data = blockIdx.x * group_size;
+// __global__ void group_norm_f32(const float  *x,float *dst, int group_size, int n_elements, int num_iters) {
+//         const float eps = 1e-6f;
+// 	    const int start_data = blockIdx.x * group_size;
 
-        __shared__ float data[4];
+//         __shared__ float data[4];
 
-        if(threadIdx.x == 0) {
-                data[0] = 0.0f; // sum
-                data[1] = 0.0f; // mean
-                data[2] = 0.0f; // sum2
-                data[3] = 0.0f; // scale
+//         if(threadIdx.x == 0) {
+//                 data[0] = 0.0f; // sum
+//                 data[1] = 0.0f; // mean
+//                 data[2] = 0.0f; // sum2
+//                 data[3] = 0.0f; // scale
+//         }
+
+//         int it = 0;
+//         __syncthreads();
+//         while(it < num_iters) {
+//                 // [0, group_size)
+//                 int virtual_idx = threadIdx.x + it * blockDim.x;
+//                 // [0, n_elements)
+//                 int index = start_data + virtual_idx;
+//                 if(virtual_idx >= group_size) {
+//                         break;
+//                 }
+//                 if(index < 0 || index > n_elements - 1) {
+//                     return;
+//                 }
+//                 atomicAdd(data, x[index]); // add sum
+//                 it++;
+//         }
+//         __syncthreads();
+//         if(threadIdx.x == 0) {
+//                 dst[blockIdx.x] = data[0];
+//                 atomicAdd(data + 1, data[0] / group_size); // calculate mean
+//         }
+
+//         it = 0;
+//         __syncthreads();
+//         while(it < num_iters) {
+//                 int virtual_idx = threadIdx.x + it * blockDim.x;
+//                 if(virtual_idx >= group_size) {
+//                         break;
+//                 }
+//                 int index = start_data + virtual_idx;
+//                 float v = x[index] - data[1]; // mean
+//                 dst[index] = v;
+//                 atomicAdd(data + 2, v * v); // add sum2
+//                 it++;
+//         }
+
+//         if(threadIdx.x == 0) {
+//                 float variance = data[2] / group_size;
+//                 atomicAdd(data + 3, 1.0f / sqrtf(variance + eps)); // calculate scale
+//         }
+
+//         it = 0;
+//         __syncthreads();
+//         while(it < num_iters) {
+//                 int virtual_idx = threadIdx.x + it * blockDim.x;
+//                 if(virtual_idx >= group_size) {
+//                         break;
+//                 }
+//                 dst[start_data + virtual_idx] *= data[3];
+//                 it++;
+//         }
+// }
+
+__global__ void group_norm_f32(const float  *x,float *dst, int n_channels, int n_channels_per_group, int ne00, int ne01, int nb02) {
+    int start = threadIdx.x * n_channels_per_group;
+    const float eps = 1e-6f;
+    int end = start + n_channels_per_group;
+    if (end > n_channels) {
+        end = n_channels;
+    }
+    if(start == end) {
+        return;
+    }
+    int step = end - start;
+    float sum = 0.0f;
+    for (int j = start; j < end; j++) {
+        for (int i = 0; i < ne01; i++) {
+            for (int k = 0; k < ne00; k++) {
+                sum += x[k + i * ne00 + j * nb02];
+            }
         }
-
-        int it = 0;
-        __syncthreads();
-        while(it < num_iters) {
-                int virtual_idx = threadIdx.x + it * blockDim.x;
-                if(virtual_idx >= group_size) {
-                        break;
-                }
-                int index = start_data + virtual_idx;
-                if(index >= n_elements) {
-                        return;
-                }
-                atomicAdd(data, x[index]); // add sum
-                it++;
-        }
-
-        if(threadIdx.x == 0) {
-                atomicAdd(data + 1, data[0] / group_size); // calculate mean
-        }
-
-        it = 0;
-        __syncthreads();
-        while(it < num_iters) {
-                int virtual_idx = threadIdx.x + it * blockDim.x;
-                if(virtual_idx >= group_size) {
-                        break;
-                }
-                int index = start_data + virtual_idx;
-                float v = x[index] - data[1]; // mean
+    }
+    float mean = sum / (nb02 * step);
+    float sum2 = 0.0f;
+    for (int j = start; j < end; j++) {
+        for (int i = 0; i < ne01; i++) {
+            for (int k = 0; k < ne00; k++) {
+                int index = k + i * ne00 + j * nb02;
+                float v = x[index] - mean;
                 dst[index] = v;
-                atomicAdd(data + 2, v * v); // add sum2
-                it++;
+                sum2 += v * v;
+            }
         }
-
-        if(threadIdx.x == 0) {
-                atomicAdd(data + 3, 1.0f / sqrtf(data[2] / group_size + eps)); // calculate scale
+    }
+    float variance = sum2 / (nb02 * step);
+    const float scale = 1.0f / sqrtf(variance + eps);
+    for (int j = start; j < end; j++) {
+        for (int i = 0; i < ne01; i++) {
+            for (int k = 0; k < ne00; k++) {
+                dst[k + i * ne00 + j * nb02] *= scale;
+            }
         }
-
-        it = 0;
-        __syncthreads();
-        while(it < num_iters) {
-                int virtual_idx = threadIdx.x + it * blockDim.x;
-                if(virtual_idx >= group_size) {
-                        break;
-                }
-                dst[start_data + virtual_idx] *= data[3];
-                it++;
-        }
+    }
 }
 
 __global__ void concat_f32(const float  *x,const float  *y, float *dst, int ne02) {
@@ -4838,10 +4884,14 @@ static void norm_f32_cuda(const float * x, float * dst, const int ncols, const i
     }
 }
 
-static void group_norm_f32_cuda(const float * x, float * dst, const int num_groups, const int group_size, const int k, cudaStream_t stream) {
-    int max_block_size = group_size > CUDA_REPEAT_BLOCK_SIZE ? CUDA_REPEAT_BLOCK_SIZE : group_size;
-    int num_iters = max_block_size == group_size ? 1 : ((k + max_block_size - 1) / max_block_size);
-    group_norm_f32<<<num_groups, max_block_size, 4 * sizeof(float), stream>>>(x, dst, group_size, k, num_iters);
+// static void group_norm_f32_cuda(const float * x, float * dst, const int num_groups, const int group_size, const int k, cudaStream_t stream) {
+//     int max_block_size = group_size > CUDA_REPEAT_BLOCK_SIZE ? CUDA_REPEAT_BLOCK_SIZE : group_size;
+//     int num_iters = max_block_size == group_size ? 1 : ((group_size + max_block_size - 1) / max_block_size);
+//     group_norm_f32<<<num_groups, max_block_size, 4 * sizeof(float), stream>>>(x, dst, group_size, k, num_iters);
+// }
+
+static void group_norm_f32_cuda(const float * x, float * dst, const int num_groups, int num_channels, const int n_channels_per_group, int ne00, int ne01, int nb02, cudaStream_t stream) {
+    group_norm_f32<<<1, num_groups, 0, stream>>>(x, dst, num_channels, n_channels_per_group, ne00, ne01, nb02);
 }
 
 static void concat_f32_cuda(const float * x, const float * y, float * dst, const int ne0, int ne1, int ne2, const int ne3, int ne02, cudaStream_t stream) {
@@ -6286,10 +6336,14 @@ inline void ggml_cuda_op_group_norm(
     GGML_ASSERT( dst->type == GGML_TYPE_F32);
 
     int num_groups = dst->op_params[0];
+    int n_channels = src0->ne[2];
+    int n_channels_per_group = ((n_channels + num_groups - 1) / num_groups);
 
-    int group_size = src0->ne[0] * src0->ne[1] * ((src0->ne[2] + num_groups - 1) / num_groups);
+    //int group_size = src0->ne[0] * src0->ne[1] * n_channels_per_group;
 
-    group_norm_f32_cuda(src0_dd, dst_dd, num_groups, group_size, ggml_nelements(src0), main_stream);
+    //group_norm_f32_cuda(src0_dd, dst_dd, num_groups, group_size, ggml_nelements(src0), main_stream);
+
+    group_norm_f32_cuda(src0_dd, dst_dd, num_groups, n_channels, n_channels_per_group, src0->ne[0], src0->ne[1], src0->ne[0] * src0->ne[1], main_stream);
 
     (void) src1;
     (void) dst;
