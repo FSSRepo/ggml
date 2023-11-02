@@ -6870,6 +6870,8 @@ inline void ggml_cuda_op_im2col(
     const int64_t OH = is_2D ? dst->ne[2] : 1;
     const int64_t OW = dst->ne[1];
 
+    // unexpected behavior: sometimes dst_dd has data
+    cudaMemsetAsync(dst_dd, 0, ggml_nbytes(dst), main_stream);
 
     im2col_f32_f16_cuda(src1_dd, (half*) dst_dd,
         OH, IW, IH, OW, IC, KH, KW, N,
