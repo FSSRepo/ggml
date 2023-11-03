@@ -35,3 +35,4 @@ zig-cache/
 *.sw?
 
 __pycache__/
+*.bat

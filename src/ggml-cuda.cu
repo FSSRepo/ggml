@@ -7088,18 +7088,16 @@ static void ggml_cuda_op_mul_mat(
 
     int ne10 = src1->ne[0];
     int ne11 = src1->ne[1];
-    int ne12 = src0->ne[2];
+    int ne12 = src1->ne[2];
 
     int ne0 = dst->ne[0];
     int ne1 = dst->ne[1];
-
-    int div = ne12 / ne02;
 
     int m = ne01, n = ne11, k = ne10;
 
     dim3 blockDim(16, 16);
     dim3 gridDim((m + blockDim.x - 1) / blockDim.x, (n + blockDim.y - 1) / blockDim.y);
-    for(int i = 0; i < div; i++) {
+    for(int i = 0; i < ne12; i++) {
         int offset_src0 = (i < ne02 ? i : (ne02 - 1)) * ne00 * ne01;
         int offset_src1 = i * ne10 * ne11;
         int offset_dst = i * ne0 * ne1;
@@ -7783,7 +7781,9 @@ bool ggml_cuda_compute_forward(struct ggml_compute_params * params, struct ggml_
         || (tensor->src[0] != nullptr && (tensor->src[0]->backend == GGML_BACKEND_GPU || tensor->src[0]->backend == GGML_BACKEND_GPU_SPLIT))
         || (tensor->src[1] != nullptr && tensor->src[1]->backend == GGML_BACKEND_GPU);
 
-    if (!any_on_device && tensor->op != GGML_OP_MUL_MAT) {
+    if (!any_on_device &&
+        // ops supported by cuda
+        tensor->op != GGML_OP_NORM) {
         return false;
     }
 
@@ -7833,9 +7833,6 @@ bool ggml_cuda_compute_forward(struct ggml_compute_params * params, struct ggml_
             func = ggml_cuda_rms_norm;
             break;
         case GGML_OP_MUL_MAT:
-            if (!any_on_device && !ggml_cuda_can_mul_mat(tensor->src[0], tensor->src[1], tensor)) {
-                return false;
-            }
             func = ggml_cuda_mul_mat;
             break;
         case GGML_OP_SCALE:

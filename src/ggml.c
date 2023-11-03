@@ -129,8 +129,8 @@ typedef void * thread_ret_t;
 /*#define GGML_PERF*/
 #define GGML_DEBUG 0
 #define GGML_GELU_FP16
-#define GGML_GELU_QUICK_FP16
-#define GGML_SILU_FP16
+//#define GGML_GELU_QUICK_FP16
+//#define GGML_SILU_FP16
 // #define GGML_CROSS_ENTROPY_EXP_FP16
 // #define GGML_FLASH_ATTN_EXP_FP16
 
@@ -17957,12 +17957,7 @@ struct ggml_cplan ggml_graph_plan(struct ggml_cgraph * cgraph, int n_threads) {
                     size_t cur = 0;
                     const enum ggml_type vec_dot_type = type_traits[node->src[0]->type].vec_dot_type;
 
-#if defined(GGML_USE_CUBLAS)
-                    if (ggml_cuda_can_mul_mat(node->src[0], node->src[1], node)) {
-                        n_tasks = 1; // TODO: this actually is doing nothing
-                                     //       the threads are still spinning
-                    } else
-#elif defined(GGML_USE_CLBLAST)
+#if defined(GGML_USE_CLBLAST)
                     if (ggml_cl_can_mul_mat(node->src[0], node->src[1], node)) {
                         n_tasks = 1; // TODO: this actually is doing nothing
                                      //       the threads are still spinning
