@@ -7825,6 +7825,7 @@ bool ggml_cuda_compute_forward(struct ggml_compute_params * params, struct ggml_
         || (tensor->src[1] != nullptr && tensor->src[1]->backend == GGML_BACKEND_GPU);
 
     if (!any_on_device
+
         // if GGML_USE_CUBLAS and backend is cpu offload all ops required by stable-diffusion
         &&
         tensor->op != GGML_OP_ADD &&
