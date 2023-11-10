@@ -6243,24 +6243,22 @@ static cudaError_t ggml_cuda_cpy_tensor_2d(
     const int64_t bs = ggml_blck_size(type);
     int64_t i1_diff = i1_high - i1_low;
 
-    // const char * x = src_ptr + i1_low*nb1 + i2*nb2 + i3*nb3;
-    // if (nb0 == ts && nb1 == ts*ne0/bs) {
-    //     return cudaMemcpyAsync(dst_ptr, x, i1_diff*nb1, kind, stream);
-    // } else if (nb0 == ts) {
-    //     return cudaMemcpy2DAsync(dst_ptr, ts*ne0/bs, x, nb1, ts*ne0/bs, i1_diff, kind, stream);
-    // } else {
-    //     for (int64_t i1 = 0; i1 < i1_diff; i1++) {
-    //         const void * rx = (const void *) ((const char *) x + i1*nb1);
-    //         void * rd = (void *) (dst_ptr + i1*ts*ne0/bs);
-    //         // pretend the row is a matrix with cols=1
-    //         cudaError_t r = cudaMemcpy2DAsync(rd, ts/bs, rx, nb0, ts/bs, ne0, kind, stream);
-    //         if (r != cudaSuccess) return r;
-    //     }
-    //     return cudaSuccess;
-    // }
-
-    // ggml_cont with cpu backend need this
-    return cudaMemcpyAsync(dst_ptr, src_ptr, ggml_nbytes(src), kind, stream);
+    const char * x = src_ptr + i1_low*nb1 + i2*nb2 + i3*nb3;
+    if (nb0 == ts && nb1 == ts*ne0/bs) {
+        return cudaMemcpyAsync(dst_ptr, x, i1_diff*nb1, kind, stream);
+    } else if (nb0 == ts) {
+        return cudaMemcpy2DAsync(dst_ptr, ts*ne0/bs, x, nb1, ts*ne0/bs, i1_diff, kind, stream);
+    } else {
+        for (int64_t i1 = 0; i1 < i1_diff; i1++) {
+            const void * rx = (const void *) ((const char *) x + i1*nb1);
+            void * rd = (void *) (dst_ptr + i1*ts*ne0/bs);
+            // pretend the row is a matrix with cols=1
+            cudaError_t r = cudaMemcpy2DAsync(rd, ts/bs, rx, nb0, ts/bs, ne0, kind, stream);
+            if (r != cudaSuccess) return r;
+        }
+        return cudaSuccess;
+    }
+    return cudaErrorInvalidValue;
 }
 
 static void ggml_cuda_op_repeat(
@@ -8348,14 +8346,22 @@ void ggml_cuda_free_scratch() {
     g_scratch_buffer = nullptr;
 }
 
+static bool request_disable_fallback = false;
+static bool disable_fallback = false;
+
 bool ggml_cuda_compute_forward(struct ggml_compute_params * params, struct ggml_tensor * tensor) {
     ggml_cuda_func_t func;
     const bool any_on_device = tensor->backend == GGML_BACKEND_GPU
         || (tensor->src[0] != nullptr && (tensor->src[0]->backend == GGML_BACKEND_GPU || tensor->src[0]->backend == GGML_BACKEND_GPU_SPLIT))
         || (tensor->src[1] != nullptr && tensor->src[1]->backend == GGML_BACKEND_GPU);
 
-    if (!any_on_device
+    disable_fallback = request_disable_fallback;
+    if(!any_on_device && !disable_fallback && strcmp(ggml_get_name(tensor), "dfallback") == 0) {
+        request_disable_fallback = true;
+        printf("CUDA Fallback disabled\n"); // VAE decoder requires too much memory
+    }
 
+    if (disable_fallback || !any_on_device
         // if GGML_USE_CUBLAS and backend is cpu offload all ops required by stable-diffusion
         &&
         tensor->op != GGML_OP_ADD &&
@@ -8369,7 +8375,7 @@ bool ggml_cuda_compute_forward(struct ggml_compute_params * params, struct ggml_
         tensor->op != GGML_OP_CONCAT &&
         tensor->op != GGML_OP_DIAG_MASK_INF &&
         tensor->op != GGML_OP_GET_ROWS &&
-        tensor->op != GGML_OP_CONT &&
+        //tensor->op != GGML_OP_CONT &&
         tensor->op != GGML_OP_UPSCALE &&
         tensor->op != GGML_OP_SCALE &&
         tensor->op != GGML_OP_IM2COL &&
