@@ -4817,11 +4817,13 @@ static __global__ void clamp_f32(const float * x, float * dst, const float min, 
 static  __global__ void im2col_f32_f16(const float* x, half* dst, int ofs0, int ofs1, int IW,int IH,int CHW,int s0,int s1,int p0,int p1,int d0,int d1) {
     int iiw = blockIdx.z * s0 + threadIdx.z * d0 - p0;
 	int iih = blockIdx.y * s1 + threadIdx.y * d1 - p1;
-    __syncthreads();
+    int offset_dst = (threadIdx.x * gridDim.y * gridDim.z + blockIdx.y * gridDim.z + blockIdx.z) * CHW
+        + (blockIdx.x * (blockDim.y * blockDim.z) + threadIdx.y * blockDim.z + threadIdx.z);
     if (!(iih < 0 || iih >= IH || iiw < 0 || iiw >= IW)) {
-        int offset_dst = (threadIdx.x * gridDim.y * gridDim.z + blockIdx.y * gridDim.z + blockIdx.z) * CHW;
         int offset_src = threadIdx.x * ofs0 +  blockIdx.x * ofs1;
-        dst[offset_dst + (blockIdx.x * (blockDim.y * blockDim.z) + threadIdx.y * blockDim.z + threadIdx.z)] = __float2half(x[offset_src + iih * IW + iiw]);
+        dst[offset_dst] = __float2half(x[offset_src + iih * IW + iiw]);
+    } else {
+        dst[offset_dst] = __float2half(0.0f);
     }
 }
 
@@ -6872,9 +6874,6 @@ inline void ggml_cuda_op_im2col(
 
     const int64_t OH = is_2D ? dst->ne[2] : 1;
     const int64_t OW = dst->ne[1];
-
-    // unexpected behavior: sometimes dst_dd has data
-    cudaMemsetAsync(dst_dd, 0, ggml_nbytes(dst), main_stream);
 
     im2col_f32_f16_cuda(src1_dd, (half*) dst_dd,
         OH, IW, IH, OW, IC, KH, KW, N,
