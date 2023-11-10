@@ -578,15 +578,6 @@ static __global__ void mul_mat_f16_f32_f32(const half *x, const float  *y, float
     }
 }
 
-static __global__ void add_f16_f32_f32(const half * x, const float * y, float * dst, const int k) {
-    const int i = blockDim.x*blockIdx.x + threadIdx.x;
-
-    if (i >= k) {
-        return;
-    }
-    dst[i] = __half2float(x[i]) + y[i];
-}
-
 static __global__ void mul_mat_f32(const float  *x, const float  *y, float *dst, int M, int N, int K) {
     int row = blockIdx.y * blockDim.y + threadIdx.y;
     int col = blockIdx.x * blockDim.x + threadIdx.x;
@@ -4987,11 +4978,6 @@ static void add_f16_f32_f32_cuda(const half * x, const float * y, float * dst, c
     add_f16_f32_f32<<<num_blocks, CUDA_ADD_BLOCK_SIZE, 0, stream>>>(x, y, dst, k);
 }
 
-static void add_f16_f32_f32_cuda(const half * x, const float * y, float * dst, const int k, cudaStream_t stream) {
-    const int num_blocks = (k + CUDA_ADD_BLOCK_SIZE - 1) / CUDA_ADD_BLOCK_SIZE;
-    add_f16_f32_f32<<<num_blocks, CUDA_ADD_BLOCK_SIZE, 0, stream>>>(x, y, dst, k);
-}
-
 static void mul_f32_cuda(const float * x, const float * y, float * dst, const int ne0, const int ne1, const int ne2, cudaStream_t stream) {
     int block2d_size = ne0 * ne1;
     int num_blocks = (block2d_size + CUDA_MUL_BLOCK_SIZE - 1) / CUDA_MUL_BLOCK_SIZE;
@@ -6883,7 +6869,7 @@ inline void ggml_cuda_op_mul_mat_cublas(
             src1_as_f16 = (half *) ggml_cuda_pool_malloc_async(ne * sizeof(half), &src1_as, id, stream);
             to_fp16_cuda(src1_ddf_i, src1_as_f16, ne, stream);
         }
-        const half * src1_ptr = src1->type == GGML_TYPE_F16 ? (const half *) src1_ddq_i : src1_as_f16;
+        const half * src1_ptr = src1->type == GGML_TYPE_F16 ? (const half *) src1_ddf_i : src1_as_f16;
         size_t dst_f16_as = 0;
         half * dst_f16 = (half *) ggml_cuda_pool_malloc_async(row_diff*src1_ncols * sizeof(half), &dst_f16_as, id, stream);
 

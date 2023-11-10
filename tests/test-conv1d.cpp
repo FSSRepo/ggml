@@ -133,7 +133,7 @@ void load_model(test_model & model, bool use_gpu = false) {
 }
 
 struct ggml_cgraph * build_graph(const test_model& model, struct ggml_allocr * allocr) {
-    static size_t buf_size = ggml_tensor_overhead()*GGML_MAX_NODES + ggml_graph_overhead();
+    static size_t buf_size = ggml_tensor_overhead()*GGML_DEFAULT_GRAPH_SIZE + ggml_graph_overhead();
     static std::vector<uint8_t> buf(buf_size);
 
     struct ggml_init_params params0 = {
@@ -198,7 +198,7 @@ int main(void)
     ggml_time_init();
 
     test_model model;
-    load_model(model, true);
+    load_model(model, false);
 
     ggml_backend_buffer_t buf_compute; // for compute
     struct ggml_allocr * allocr = NULL;
@@ -220,7 +220,7 @@ int main(void)
 
     struct ggml_cgraph * gf_res = compute_graph(model, allocr);
 
-     struct ggml_tensor * im2col_res = NULL;
+    struct ggml_tensor * im2col_res = NULL;
     struct ggml_tensor * conv1d_res = NULL;
 
     for(int i = 0; i < gf_res->n_nodes; i++) {

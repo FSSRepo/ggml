@@ -15718,6 +15718,10 @@ static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads) {
             {
                 n_tasks = 1; //TODO
             } break;
+        case GGML_OP_IM2COL:
+            {
+                n_tasks = n_threads;
+            } break;
         case GGML_OP_CONV_TRANSPOSE_1D:
             {
                 n_tasks = n_threads;
