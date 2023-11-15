@@ -8420,6 +8420,7 @@ void ggml_cuda_free_scratch() {
 }
 
 // DEBUG STABLE DIFFUSION
+#if 0
 #include <stdarg.h>
 
 
@@ -8466,6 +8467,7 @@ void save_tensor(ggml_tensor* tensor,const char* target, const char* name, int n
     }
     fclose(fp);
 }
+#endif
 
 static bool request_disable_fallback = false;
 static bool disable_fallback = false;
@@ -8482,12 +8484,6 @@ bool ggml_cuda_compute_forward(struct ggml_compute_params * params, struct ggml_
     if(!any_on_device && !disable_fallback && strcmp(ggml_get_name(tensor), "dfallback") == 0) {
         request_disable_fallback = true;
         printf("CUDA Fallback disabled\n"); // VAE decoder requires too much memory
-    }
-
-    // DEBUG
-    if(strcmp(ggml_get_name(tensor), "node_1") == 0) { // skip CLIP Model
-        track_unet = clip == 2;
-        clip++;
     }
 
     if (disable_fallback || !any_on_device
@@ -8636,8 +8632,12 @@ bool ggml_cuda_compute_forward(struct ggml_compute_params * params, struct ggml_
     }
 
     func(tensor->src[0], tensor->src[1], tensor);
-
-    // DEBUG
+#if 0
+    // DEBUG STABLE DIFFUSION
+    if(strcmp(ggml_get_name(tensor), "node_1") == 0) { // skip CLIP Model
+        track_unet = clip == 2;
+        clip++;
+    }
     if(track_unet && tensor->op != GGML_OP_CONT && tensor->op != GGML_OP_REPEAT && ggml_nbytes(tensor) < 10 * 1024 * 1024) {
         const char* t_name = ggml_get_name(tensor);
         if(strcmp(t_name, "node_1313") == 0) {
@@ -8658,6 +8658,7 @@ bool ggml_cuda_compute_forward(struct ggml_compute_params * params, struct ggml_
         view_count++;
         track_unet = strcmp(t_name, "UNET Finish") != 0;
     }
+#endif
     return true;
 }
 
