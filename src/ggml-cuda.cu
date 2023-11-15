@@ -7954,7 +7954,7 @@ static void ggml_cuda_mul_mat(const ggml_tensor * src0, const ggml_tensor * src1
     }
 
 #ifdef CUDA_USE_TENSOR_CORES
-    const bool use_tensor_cores = true;
+    const bool use_tensor_cores = false;
 #else
     const bool use_tensor_cores = false;
 #endif
@@ -8420,52 +8420,52 @@ void ggml_cuda_free_scratch() {
 }
 
 // DEBUG STABLE DIFFUSION
-// #include <stdarg.h>
+#include <stdarg.h>
 
 
-// bool track_unet = false;
-// int clip = 0;
-// int view_count = 0;
+bool track_unet = false;
+int clip = 0;
+int view_count = 0;
 
-// void log_file(const char* format, ...) {
-//     FILE *file = fopen("C:\\proyects\\nodes.txt", "a");
-//     if (file == NULL) {
-//         perror("Error opening file");
-//         return;
-//     }
+void log_file(const char* format, ...) {
+    FILE *file = fopen("C:\\proyects\\nodes.txt", "a");
+    if (file == NULL) {
+        perror("Error opening file");
+        return;
+    }
 
-//     va_list args;
-//     va_start(args, format);
-//     vfprintf(file, format, args);
-//     va_end(args);
-//     fclose(file);
-// }
+    va_list args;
+    va_start(args, format);
+    vfprintf(file, format, args);
+    va_end(args);
+    fclose(file);
+}
 
-// void save_tensor(ggml_tensor* tensor,const char* target, const char* name, int num, int source, const char* source_name) {
-//     char file_name[150];
-//     sprintf(file_name,
-//         source != -1 ? "C:\\proyects\\output%s\\%s.%i-src%i_%s.tensor" :
-//         "C:\\proyects\\output%s\\%s.%i.tensor", target, name, num, source, source_name);
-//     FILE* fp = fopen(file_name, "wb");
-//     int ttype = (int)tensor->type;
-//     int op = (int)tensor->op;
-//     fwrite(&tensor->n_dims, 1, sizeof(tensor->n_dims), fp);
-//     fwrite(&ttype, 1, sizeof(ttype), fp);
-//     fwrite(&op, 1, sizeof(op), fp);
-//     for (int i = 0; i < tensor->n_dims; ++i) {
-//         int ne_ = (int) tensor->ne[i];
-//         fwrite(&ne_, 1, sizeof(ne_), fp);
-//     }
-//     if(tensor->backend == GGML_BACKEND_GPU) {
-//         void* cpu_block = malloc(ggml_nbytes(tensor));
-//         ggml_backend_tensor_get(tensor, cpu_block, 0, ggml_nbytes(tensor));
-//         fwrite(cpu_block, 1, ggml_nbytes(tensor), fp);
-//         free(cpu_block);
-//     } else {
-//         fwrite(tensor->data, 1, ggml_nbytes(tensor), fp);
-//     }
-//     fclose(fp);
-// }
+void save_tensor(ggml_tensor* tensor,const char* target, const char* name, int num, int source, const char* source_name) {
+    char file_name[150];
+    sprintf(file_name,
+        source != -1 ? "C:\\proyects\\output%s\\%s.%i-src%i_%s.tensor" :
+        "C:\\proyects\\output%s\\%s.%i.tensor", target, name, num, source, source_name);
+    FILE* fp = fopen(file_name, "wb");
+    int ttype = (int)tensor->type;
+    int op = (int)tensor->op;
+    fwrite(&tensor->n_dims, 1, sizeof(tensor->n_dims), fp);
+    fwrite(&ttype, 1, sizeof(ttype), fp);
+    fwrite(&op, 1, sizeof(op), fp);
+    for (int i = 0; i < tensor->n_dims; ++i) {
+        int ne_ = (int) tensor->ne[i];
+        fwrite(&ne_, 1, sizeof(ne_), fp);
+    }
+    if(tensor->backend == GGML_BACKEND_GPU) {
+        void* cpu_block = malloc(ggml_nbytes(tensor));
+        ggml_backend_tensor_get(tensor, cpu_block, 0, ggml_nbytes(tensor));
+        fwrite(cpu_block, 1, ggml_nbytes(tensor), fp);
+        free(cpu_block);
+    } else {
+        fwrite(tensor->data, 1, ggml_nbytes(tensor), fp);
+    }
+    fclose(fp);
+}
 
 static bool request_disable_fallback = false;
 static bool disable_fallback = false;
@@ -8485,14 +8485,10 @@ bool ggml_cuda_compute_forward(struct ggml_compute_params * params, struct ggml_
     }
 
     // DEBUG
-    // if(strcmp(ggml_get_name(tensor), "node_1") == 0) {
-    //     for (int i = 0; i < GGML_OP_COUNT; i++) {
-    //         timer_ops[i] = 0;
-    //         count_ops[i] = 0;
-    //     }
-    //     track_unet = clip == 2;
-    //     clip++;
-    // }
+    if(strcmp(ggml_get_name(tensor), "node_1") == 0) { // skip CLIP Model
+        track_unet = clip == 2;
+        clip++;
+    }
 
     if (disable_fallback || !any_on_device
         // if GGML_USE_CUBLAS and backend is cpu offload all ops required by stable-diffusion
@@ -8638,28 +8634,30 @@ bool ggml_cuda_compute_forward(struct ggml_compute_params * params, struct ggml_
     if (params->type == GGML_TASK_INIT || params->type == GGML_TASK_FINALIZE) {
         return true;
     }
+
     func(tensor->src[0], tensor->src[1], tensor);
+
     // DEBUG
-    // if(track_unet && tensor->op != GGML_OP_CONT && tensor->op != GGML_OP_REPEAT && ggml_nbytes(tensor) < 10 * 1024 * 1024) {
-    //     const char* t_name = ggml_get_name(tensor);
-    //     if(strcmp(t_name, "node_1313") == 0) {
-    //         printf("saving %s -> %s %s\n", t_name, ggml_type_name(tensor->src[0]->type), ggml_type_name(tensor->src[1]->type));
-    //         if(tensor->op != GGML_OP_ADD) {
-    //             printf("Error");
-    //             return false;
-    //         }
-    //         save_tensor(tensor->src[0], !any_on_device ? "" : "-cuda", t_name, view_count, 0, ggml_get_name(tensor->src[0]));
-    //         log_file("%s.%i-src0_%s\n", t_name, view_count, ggml_get_name(tensor->src[0]));
-    //         if(tensor->src[1] != nullptr) {
-    //             save_tensor(tensor->src[1], !any_on_device ? "" : "-cuda", t_name, view_count, 1, ggml_get_name(tensor->src[1]));
-    //             log_file("%s.%i-src1_%s\n", t_name, view_count, ggml_get_name(tensor->src[1]));
-    //         }
-    //     }
-    //     save_tensor(tensor, !any_on_device ? "" : "-cuda", t_name, view_count, -1, "");
-    //     log_file("%s.%i\n", t_name, view_count);
-    //     view_count++;
-    //     track_unet = strcmp(t_name, "UNET Finish") != 0;
-    // }
+    if(track_unet && tensor->op != GGML_OP_CONT && tensor->op != GGML_OP_REPEAT && ggml_nbytes(tensor) < 10 * 1024 * 1024) {
+        const char* t_name = ggml_get_name(tensor);
+        if(strcmp(t_name, "node_1313") == 0) {
+            printf("saving %s -> %s %s\n", t_name, ggml_type_name(tensor->src[0]->type), ggml_type_name(tensor->src[1]->type));
+            if(tensor->op != GGML_OP_ADD) {
+                printf("Error");
+                return false;
+            }
+            save_tensor(tensor->src[0], !any_on_device ? "" : "-cuda", t_name, view_count, 0, ggml_get_name(tensor->src[0]));
+            log_file("%s.%i-src0_%s\n", t_name, view_count, ggml_get_name(tensor->src[0]));
+            if(tensor->src[1] != nullptr) {
+                save_tensor(tensor->src[1], !any_on_device ? "" : "-cuda", t_name, view_count, 1, ggml_get_name(tensor->src[1]));
+                log_file("%s.%i-src1_%s\n", t_name, view_count, ggml_get_name(tensor->src[1]));
+            }
+        }
+        save_tensor(tensor, !any_on_device ? "" : "-cuda", t_name, view_count, -1, "");
+        log_file("%s.%i\n", t_name, view_count);
+        view_count++;
+        track_unet = strcmp(t_name, "UNET Finish") != 0;
+    }
     return true;
 }
 
