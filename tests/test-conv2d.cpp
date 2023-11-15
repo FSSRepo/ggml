@@ -2,7 +2,7 @@
 #include "ggml/ggml-alloc.h"
 #include "ggml/ggml-backend.h"
 
-// #define GGML_USE_CUBLAS
+#define GGML_USE_CUBLAS
 
 #ifdef GGML_USE_CUBLAS
 #include "ggml-cuda.h"
@@ -35,8 +35,8 @@ void load_model(test_model & model, bool use_gpu = false) {
     int IW = 8, IH = 6, N = 1;
 
     // Initialize adata
-    float* adata = new float[KW * KH * IC * OC];
-    for (size_t i = 0; i < KW * KH * IC * OC; i++) {
+    float * adata = new float[KW * KH * IC * OC];
+    for (int i = 0; i < KW * KH * IC * OC; i++) {
         adata[i] = 2.5f;
     }
 
@@ -45,8 +45,8 @@ void load_model(test_model & model, bool use_gpu = false) {
     ggml_fp32_to_fp16_row(adata, hadata.data(), KW * KH * IC * OC);
 
     // Initialize bdata
-    float* bdata =  new float[IW * IH * IC * N];
-    for (size_t i = 0; i < IW * IH * IC * N; i++) {
+    float * bdata =  new float[IW * IH * IC * N];
+    for (int i = 0; i < IW * IH * IC * N; i++) {
         bdata[i] = 1.5f;
     }
 
@@ -58,7 +58,7 @@ void load_model(test_model & model, bool use_gpu = false) {
     }
 
     printf("%s: ggml tensor size    = %d bytes\n", __func__, (int) sizeof(ggml_tensor));
-    printf("%s: backend buffer size = %0.2f MB\n", __func__, (int) (buffer_size/ 1024.f/ 1024.f));
+    printf("%s: backend buffer size = %0.2f MB\n", __func__, (buffer_size/ 1024.f/ 1024.f));
 
     int num_tensors = 2;
     struct ggml_init_params params {
@@ -208,8 +208,7 @@ int main(void)
     struct ggml_allocr * allocr = NULL;
 
     {
-        size_t align = ggml_backend_get_alignment(model.backend);
-        allocr = ggml_allocr_new_measure(align);
+        allocr = ggml_allocr_new_measure_from_backend(model.backend);
 
         //create the worst case graph for memory usage estimation
         struct ggml_cgraph * gf = build_graph(model, allocr);
@@ -380,7 +379,7 @@ int main(void)
         }
     }
 
-    printf("ggml_im2col (%i): %s\n", ggml_nelements(im2col_res), passed && (ggml_nelements(im2col_res) == n_im2col_test) ? "\033[32mPASSED\033[0m" : "\033[31mFAILED\033[0m");
+    printf("ggml_im2col (%d): %s\n", (int) ggml_nelements(im2col_res), passed && (ggml_nelements(im2col_res) == n_im2col_test) ? "\033[32mPASSED\033[0m" : "\033[31mFAILED\033[0m");
 
     passed = true;
     for(int i = 0; i < n_conv2d_test; i++) {
@@ -390,7 +389,7 @@ int main(void)
         }
     }
 
-    printf("ggml_conv2d (%i): %s\n", ggml_nelements(conv2d_res), passed && (ggml_nelements(conv2d_res) == n_conv2d_test) ? "\033[32mPASSED\033[0m" : "\033[31mFAILED\033[0m");
+    printf("ggml_conv2d (%d): %s\n", (int) ggml_nelements(conv2d_res), passed && (ggml_nelements(conv2d_res) == n_conv2d_test) ? "\033[32mPASSED\033[0m" : "\033[31mFAILED\033[0m");
 
     ggml_free(model.ctx);
 
