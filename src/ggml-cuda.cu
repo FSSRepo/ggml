@@ -553,45 +553,6 @@ static __global__ void add_f16_f32_f32(const half * x, const float * y, float * 
     dst[i] = __half2float(x[i]) + y[i];
 }
 
-static __global__ void mul_mat_f16_f32(const half *x, const half  *y, float *dst, int M, int N, int K) {
-    int row = blockIdx.y * blockDim.y + threadIdx.y;
-    int col = blockIdx.x * blockDim.x + threadIdx.x;
-
-    if (row < N && col < M) {
-        float sum = 0.0f;
-        for (int i = 0; i < K; ++i) {
-            sum += __half2float(x[col * K + i]) * __half2float(y[row * K + i]);
-        }
-        dst[row * M + col] = sum; // transpose
-    }
-}
-
-static __global__ void mul_mat_f16_f32_f32(const half *x, const float  *y, float *dst, int M, int N, int K) {
-    int row = blockIdx.y * blockDim.y + threadIdx.y;
-    int col = blockIdx.x * blockDim.x + threadIdx.x;
-
-    if (row < N && col < M) {
-        float sum = 0.0f;
-        for (int i = 0; i < K; ++i) {
-            sum += __half2float(x[col * K + i]) * __half2float(__float2half(y[row * K + i]));
-        }
-        dst[row * M + col] = sum; // transpose
-    }
-}
-
-static __global__ void mul_mat_f32(const float  *x, const float  *y, float *dst, int M, int N, int K) {
-    int row = blockIdx.y * blockDim.y + threadIdx.y;
-    int col = blockIdx.x * blockDim.x + threadIdx.x;
-
-    if (row < N && col < M) {
-        float sum = 0.0f;
-        for (int i = 0; i < K; ++i) {
-            sum += x[col * K + i] * y[row * K + i];
-        }
-        dst[row * M + col] = sum; // transpose
-    }
-}
-
 static __global__ void mul_f32(const float * x, const float * y, float * dst, const int block2d, const int num_iters, int n_elements) {
     const int tid = blockDim.x * blockIdx.x + threadIdx.x;
     int it = 0;
@@ -7954,7 +7915,7 @@ static void ggml_cuda_mul_mat(const ggml_tensor * src0, const ggml_tensor * src1
     }
 
 #ifdef CUDA_USE_TENSOR_CORES
-    const bool use_tensor_cores = false;
+    const bool use_tensor_cores = true;
 #else
     const bool use_tensor_cores = false;
 #endif
