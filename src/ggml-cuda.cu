@@ -518,52 +518,23 @@ __global__ void repeat_f32(const float* x, float* dst, int ne_rb, int ne_id, int
 	}
 }
 
-static __global__ void add_f32(const float * x, const float * y, float * dst, const int block2d, const int num_iters, int n_elements) {
-    const int tid = blockDim.x * blockIdx.x + threadIdx.x;
-    int it = 0;
-    while(it < num_iters) {
-        const int idx = tid + block2d * it;
-        if(idx >= n_elements) {
-            return;
-        }
-        dst[idx] = x[idx] + y[idx];
-        it++;
-    }
-}
 
-static __global__ void add_f16_f32_f16(const half * x, const float * y, half * dst, const int block2d, const int num_iters, int n_elements) {
-    const int tid = blockDim.x * blockIdx.x + threadIdx.x;
-    int it = 0;
-    while(it < num_iters) {
-        const int idx = tid + block2d * it;
-        if(idx >= n_elements) {
-            return;
-        }
-        dst[idx] = __hadd(x[idx], __float2half(y[idx]));
-        it++;
-    }
-}
-
-static __global__ void add_f16_f32_f32(const half * x, const float * y, float * dst, const int k) {
-    const int i = blockDim.x*blockIdx.x + threadIdx.x;
-
-    if (i >= k) {
+template<typename dst_t, typename src0_t, typename src1_t>
+static __global__ void k_add(const src0_t * x, const src1_t * y, dst_t * dst, int n_elements) {
+    const int idx = blockDim.x * blockIdx.x + threadIdx.x;
+    if(idx >= n_elements) {
         return;
     }
-    dst[i] = __half2float(x[i]) + y[i];
+    dst[idx] = (dst_t)((float)x[idx] + (float)y[idx]);
 }
 
-static __global__ void mul_f32(const float * x, const float * y, float * dst, const int block2d, const int num_iters, int n_elements) {
-    const int tid = blockDim.x * blockIdx.x + threadIdx.x;
-    int it = 0;
-    while(it < num_iters) {
-        const int idx = tid + block2d * it;
-        if(idx >= n_elements) {
-            return;
-        }
-        dst[idx] = x[idx] * y[idx];
-        it++;
+static __global__ void mul_f32(const float * x, const float * y, float * dst, int n_elements) {
+    const int idx = blockDim.x * blockIdx.x + threadIdx.x;
+
+    if(idx >= n_elements) {
+        return;
     }
+    dst[idx] = x[idx] * y[idx];
 }
 
 static __global__ void gelu_f32(const float * x, float * dst, const int k) {
@@ -661,72 +632,6 @@ static __global__ void norm_f32(const float * x, float * dst, const int ncols) {
         dst[row*ncols + col] = (x[row*ncols + col] - mean) * inv_std;
     }
 }
-
-// __global__ void group_norm_f32(const float  *x,float *dst, int group_size, int n_elements, int num_iters) {
-//         const float eps = 1e-6f;
-// 	    const int start_data = blockIdx.x * group_size;
-
-//         __shared__ float data[4];
-
-//         if(threadIdx.x == 0) {
-//                 data[0] = 0.0f; // sum
-//                 data[1] = 0.0f; // mean
-//                 data[2] = 0.0f; // sum2
-//                 data[3] = 0.0f; // scale
-//         }
-
-//         int it = 0;
-//         __syncthreads();
-//         while(it < num_iters) {
-//                 // [0, group_size)
-//                 int virtual_idx = threadIdx.x + it * blockDim.x;
-//                 // [0, n_elements)
-//                 int index = start_data + virtual_idx;
-//                 if(virtual_idx >= group_size) {
-//                         break;
-//                 }
-//                 if(index < 0 || index > n_elements - 1) {
-//                     return;
-//                 }
-//                 atomicAdd(data, x[index]); // add sum
-//                 it++;
-//         }
-//         __syncthreads();
-//         if(threadIdx.x == 0) {
-//                 dst[blockIdx.x] = data[0];
-//                 atomicAdd(data + 1, data[0] / group_size); // calculate mean
-//         }
-
-//         it = 0;
-//         __syncthreads();
-//         while(it < num_iters) {
-//                 int virtual_idx = threadIdx.x + it * blockDim.x;
-//                 if(virtual_idx >= group_size) {
-//                         break;
-//                 }
-//                 int index = start_data + virtual_idx;
-//                 float v = x[index] - data[1]; // mean
-//                 dst[index] = v;
-//                 atomicAdd(data + 2, v * v); // add sum2
-//                 it++;
-//         }
-
-//         if(threadIdx.x == 0) {
-//                 float variance = data[2] / group_size;
-//                 atomicAdd(data + 3, 1.0f / sqrtf(variance + eps)); // calculate scale
-//         }
-
-//         it = 0;
-//         __syncthreads();
-//         while(it < num_iters) {
-//                 int virtual_idx = threadIdx.x + it * blockDim.x;
-//                 if(virtual_idx >= group_size) {
-//                         break;
-//                 }
-//                 dst[start_data + virtual_idx] *= data[3];
-//                 it++;
-//         }
-// }
 
 __global__ void group_norm_f32(const float  *x,float *dst, int n_channels, int n_channels_per_group, int ne00, int ne01, int nb02) {
     int start = threadIdx.x * n_channels_per_group;
@@ -4946,28 +4851,17 @@ static void get_rows_cuda(const void * x, const int32_t * y, float * dst, const 
     k_get_rows<qk, qr, dq><<<block_nums, block_dims, 0, stream>>>(x, y, dst, ncols);
 }
 
-
-static void add_f32_cuda(const float * x, const float * y, float * dst, const int ne0, const int ne1, const int ne2, cudaStream_t stream) {
-    int block2d_size = ne0 * ne1;
-    int num_blocks = (block2d_size + CUDA_ADD_BLOCK_SIZE - 1) / CUDA_ADD_BLOCK_SIZE;
-    add_f32<<<num_blocks, CUDA_ADD_BLOCK_SIZE, 0, stream>>>(x, y, dst, block2d_size, ne2, block2d_size * ne2);
-}
-
-static void add_f16_f32_f16_cuda(const half * x, const float * y, half * dst, const int ne0, const int ne1, const int ne2, cudaStream_t stream) {
-    int block2d_size = ne0 * ne1;
-    int num_blocks = (block2d_size + CUDA_ADD_BLOCK_SIZE - 1) / CUDA_ADD_BLOCK_SIZE;
-    add_f16_f32_f16<<<num_blocks, CUDA_ADD_BLOCK_SIZE, 0, stream>>>(x, y, dst, block2d_size, ne2, block2d_size * ne2);
-}
-
-static void add_f16_f32_f32_cuda(const half * x, const float * y, float * dst, const int k, cudaStream_t stream) {
-    const int num_blocks = (k + CUDA_ADD_BLOCK_SIZE - 1) / CUDA_ADD_BLOCK_SIZE;
-    add_f16_f32_f32<<<num_blocks, CUDA_ADD_BLOCK_SIZE, 0, stream>>>(x, y, dst, k);
+template<typename dst_t, typename src0_t, typename src1_t>
+static void add_cuda(const src0_t * x, const src1_t * y, dst_t * dst, const int ne0, const int ne1, const int ne2, cudaStream_t stream) {
+    int n_els = ne0 * ne1 * ne2;
+    int num_blocks = (n_els + CUDA_ADD_BLOCK_SIZE - 1) / CUDA_ADD_BLOCK_SIZE;
+    k_add<<<num_blocks, CUDA_ADD_BLOCK_SIZE, 0, stream>>>(x, y, dst, n_els);
 }
 
 static void mul_f32_cuda(const float * x, const float * y, float * dst, const int ne0, const int ne1, const int ne2, cudaStream_t stream) {
-    int block2d_size = ne0 * ne1;
-    int num_blocks = (block2d_size + CUDA_MUL_BLOCK_SIZE - 1) / CUDA_MUL_BLOCK_SIZE;
-    mul_f32<<<num_blocks, CUDA_MUL_BLOCK_SIZE, 0, stream>>>(x, y, dst, block2d_size, ne2, block2d_size * ne2);
+    int n_els = ne0 * ne1 * ne2;
+    int num_blocks = (n_els + CUDA_MUL_BLOCK_SIZE - 1) / CUDA_MUL_BLOCK_SIZE;
+    mul_f32<<<num_blocks, CUDA_MUL_BLOCK_SIZE, 0, stream>>>(x, y, dst, n_els);
 }
 
 static void gelu_f32_cuda(const float * x, float * dst, const int k, cudaStream_t stream) {
@@ -5011,12 +4905,6 @@ static void norm_f32_cuda(const float * x, float * dst, const int ncols, const i
         norm_f32<1024><<<nrows, block_dims, 0, stream>>>(x, dst, ncols);
     }
 }
-
-// static void group_norm_f32_cuda(const float * x, float * dst, const int num_groups, const int group_size, const int k, cudaStream_t stream) {
-//     int max_block_size = group_size > CUDA_REPEAT_BLOCK_SIZE ? CUDA_REPEAT_BLOCK_SIZE : group_size;
-//     int num_iters = max_block_size == group_size ? 1 : ((group_size + max_block_size - 1) / max_block_size);
-//     group_norm_f32<<<num_groups, max_block_size, 4 * sizeof(float), stream>>>(x, dst, group_size, k, num_iters);
-// }
 
 static void group_norm_f32_cuda(const float * x, float * dst, const int num_groups, int num_channels, const int n_channels_per_group, int ne00, int ne01, int nb02, cudaStream_t stream) {
     group_norm_f32<<<1, num_groups, 0, stream>>>(x, dst, num_channels, n_channels_per_group, ne00, ne01, nb02);
@@ -6286,6 +6174,7 @@ static void ggml_cuda_op_repeat(
                 internal_dim = i != repeat_block_dim ? i : 2;
             }
         }
+
         repeat_f32_cuda(src0_d, dst_d, dst->ne[source_dim], dst->ne[repeat_block_dim], dst->ne[internal_dim], source_dim, max_repeat, stream);
         return;
     }
@@ -6395,11 +6284,11 @@ inline void ggml_cuda_op_add(
     GGML_ASSERT(src1->type == GGML_TYPE_F32);
 
     if (src0->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32) {
-        add_f32_cuda(src0_dd, src1_dd, dst_dd, dst->ne[0], dst->ne[1], dst->ne[2], main_stream);
+        add_cuda(src0_dd, src1_dd, dst_dd, dst->ne[0], dst->ne[1], dst->ne[2], main_stream);
     } else if (src0->type == GGML_TYPE_F16 && dst->type == GGML_TYPE_F16) {
-        add_f16_f32_f16_cuda((const half *) src0_dd, src1_dd, (half *) dst_dd,dst->ne[0], dst->ne[1], dst->ne[2], main_stream);
+        add_cuda((const half *) src0_dd, src1_dd, (half *) dst_dd, dst->ne[0], dst->ne[1], dst->ne[2], main_stream);
     } else if (src0->type == GGML_TYPE_F16 && dst->type == GGML_TYPE_F32) {
-        add_f16_f32_f32_cuda((const half *) src0_dd, src1_dd, dst_dd, ggml_nelements(src0), main_stream);
+        add_cuda((const half *) src0_dd, src1_dd, dst_dd, dst->ne[0], dst->ne[1], dst->ne[2], main_stream);
     } else {
         fprintf(stderr, "src0->type: %d  dst->type: %d\n", src0->type, dst->type);
         GGML_ASSERT(false);
@@ -6534,10 +6423,6 @@ inline void ggml_cuda_op_group_norm(
     int num_groups = dst->op_params[0];
     int n_channels = src0->ne[2];
     int n_channels_per_group = ((n_channels + num_groups - 1) / num_groups);
-
-    //int group_size = src0->ne[0] * src0->ne[1] * n_channels_per_group;
-
-    //group_norm_f32_cuda(src0_dd, dst_dd, num_groups, group_size, ggml_nelements(src0), main_stream);
 
     group_norm_f32_cuda(src0_dd, dst_dd, num_groups, n_channels, n_channels_per_group, src0->ne[0], src0->ne[1], src0->ne[0] * src0->ne[1], main_stream);
 
