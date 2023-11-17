@@ -8235,6 +8235,7 @@ void ggml_cuda_free_scratch() {
 static int64_t op_timings[GGML_OP_COUNT];
 static int64_t op_counts[GGML_OP_COUNT];
 #endif
+bool fallback = false;
 
 bool ggml_cuda_compute_forward(struct ggml_compute_params * params, struct ggml_tensor * tensor) {
     if (!g_cublas_loaded) return false;
@@ -8244,7 +8245,11 @@ bool ggml_cuda_compute_forward(struct ggml_compute_params * params, struct ggml_
         || (tensor->src[0] != nullptr && (tensor->src[0]->backend == GGML_BACKEND_GPU || tensor->src[0]->backend == GGML_BACKEND_GPU_SPLIT))
         || (tensor->src[1] != nullptr && tensor->src[1]->backend == GGML_BACKEND_GPU);
 
-    if (!any_on_device) {
+    if(strcmp(ggml_get_name(tensor), "fallback") == 0) {
+        fallback = true;
+    }
+
+    if (!fallback && !any_on_device || fallback && (tensor->op == GGML_OP_CONT || tensor->op == GGML_OP_IM2COL)) {
         return false;
     }
 
