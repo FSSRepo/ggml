@@ -8360,30 +8360,31 @@ bool ggml_cuda_compute_forward(struct ggml_compute_params * params, struct ggml_
     }
 
 #ifdef CUDA_BENCHMARK
-    int64_t start = ggml_time_us();
     if(strcmp(ggml_get_name(tensor), "b-start") == 0) {
         for(int i = 0; i < GGML_OP_COUNT; i++) {
             op_timings[i] = 0;
             op_counts[i] = 0;
         }
     }
+    int64_t start = ggml_time_us();
 #endif
     func(tensor->src[0], tensor->src[1], tensor);
 #ifdef CUDA_BENCHMARK
-    op_timings[tensor->op] = ggml_time_us() - start;
+    op_timings[tensor->op] += ggml_time_us() - start;
     op_counts[tensor->op] += 1;
 
     if(strcmp(ggml_get_name(tensor), "b-end") == 0) {
         float total_time = 0;
+        printf("========== CUDA Timings =========\n");
         for(int i = 0; i < GGML_OP_COUNT; i++) {
             if(op_timings[i] == 0) {
                 continue;
             }
-            float time = op_timings[tensor->op] / 1000.0f;
+            float time = op_timings[i] / 1000.0f;
             printf("[%10s] - %f ms - %i - %f ms\n", ggml_op_name((ggml_op)i), time, op_counts[i], time / op_counts[i]);
             total_time += time;
         }
-        printf("Total Time: %f ms", total_time);
+        printf("Total Time: %f ms\n", total_time);
     }
 #endif
     return true;
