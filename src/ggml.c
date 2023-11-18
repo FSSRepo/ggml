@@ -3149,6 +3149,30 @@ struct ggml_tensor * ggml_dup_inplace(
     return ggml_dup_impl(ctx, a, true);
 }
 
+// broadcast one axis of src along two axis of dst
+void ggml_broadcast(
+        struct ggml_tensor * src,
+        struct ggml_tensor * dst) {
+    int axis_broadcast = -1;
+    if(ggml_are_same_shape(src, dst)) {
+        ggml_set_op_params(dst, &axis_broadcast, sizeof(axis_broadcast));
+        return;
+    }
+    for(int i = 0; i < GGML_MAX_DIMS; i++) {
+        if(src->ne[i] > 1) {
+            if(axis_broadcast == -1) {
+                axis_broadcast = i;
+            } else {
+                axis_broadcast = -1;
+                break;
+            }
+        }
+    }
+    GGML_ASSERT(axis_broadcast != -1 && src->ne[axis_broadcast] == dst->ne[axis_broadcast]);
+    int32_t op_params[] = { axis_broadcast, axis_broadcast == 0 ? 1 : 0, axis_broadcast == 2 ? 1 : 2 };
+    ggml_set_op_params(dst, op_params, sizeof(op_params));
+}
+
 // ggml_add
 
 static struct ggml_tensor * ggml_add_impl(
@@ -3156,9 +3180,7 @@ static struct ggml_tensor * ggml_add_impl(
         struct ggml_tensor * a,
         struct ggml_tensor * b,
         bool inplace) {
-    // TODO: support less-strict constraint
-    //       GGML_ASSERT(ggml_can_repeat(b, a));
-    GGML_ASSERT(ggml_can_repeat_rows(b, a));
+    GGML_ASSERT(ggml_are_same_shape(a, b) || ggml_can_repeat(b, a));
 
     bool is_node = false;
 
@@ -3175,6 +3197,7 @@ static struct ggml_tensor * ggml_add_impl(
     result->src[0] = a;
     result->src[1] = b;
 
+    ggml_broadcast(b, result);
     return result;
 }
 
@@ -3373,9 +3396,7 @@ static struct ggml_tensor * ggml_mul_impl(
         struct ggml_tensor * a,
         struct ggml_tensor * b,
         bool inplace) {
-    // TODO: support less-strict constraint
-    //       GGML_ASSERT(ggml_can_repeat(b, a));
-    GGML_ASSERT(ggml_can_repeat_rows(b, a));
+    GGML_ASSERT(ggml_are_same_shape(a, b) || ggml_can_repeat(b, a));
 
     bool is_node = false;
 
@@ -3396,6 +3417,7 @@ static struct ggml_tensor * ggml_mul_impl(
     result->src[0] = a;
     result->src[1] = b;
 
+    ggml_broadcast(b, result);
     return result;
 }
 
@@ -5133,7 +5155,9 @@ static int64_t ggml_calc_conv_output_size(int64_t ins, int64_t ks, int s, int p,
 }
 
 // ggml_conv_1d
-
+// a: [OC, IC, K]
+// b: [N, IC, IL]
+// result: [N, OC, OL]
 GGML_API struct ggml_tensor * ggml_conv_1d(
         struct ggml_context * ctx,
         struct ggml_tensor  * a,
@@ -6806,7 +6830,7 @@ static void ggml_compute_forward_add_f32(
         const struct ggml_tensor * src0,
         const struct ggml_tensor * src1,
         struct ggml_tensor * dst) {
-    GGML_ASSERT(ggml_can_repeat_rows(src1, src0) && ggml_are_same_shape(src0, dst));
+    GGML_ASSERT(ggml_are_same_shape(src0, dst) && (ggml_are_same_shape(src0, src1) || ggml_can_repeat(src1, src0)));
 
     if (params->type == GGML_TASK_INIT || params->type == GGML_TASK_FINALIZE) {
         return;
@@ -6821,6 +6845,14 @@ static void ggml_compute_forward_add_f32(
 
     GGML_ASSERT( nb0 == sizeof(float));
     GGML_ASSERT(nb00 == sizeof(float));
+    GGML_ASSERT(nb10 == sizeof(float)); // src1 always contiguous
+
+    bool broad_cast = dst->op_params[0] != -1;
+    int axis_broadcast = dst->op_params[0];
+    const int ne_src = dst->ne[axis_broadcast];
+    const int64_t ne0_dest = broad_cast ? dst->ne[dst->op_params[1]] : 0;
+    const int64_t ne1_dest = broad_cast ? dst->ne[dst->op_params[2]] : 0;
+    const int64_t block_dest = ne0_dest * ne1_dest;
 
     // rows per thread
     const int dr = (nr + nth - 1)/nth;
@@ -6829,46 +6861,19 @@ static void ggml_compute_forward_add_f32(
     const int ir0 = dr*ith;
     const int ir1 = MIN(ir0 + dr, nr);
 
-    if (nb10 == sizeof(float)) {
-        for (int ir = ir0; ir < ir1; ++ir) {
-            // src1 is broadcastable across src0 and dst in i1, i2, i3
-            const int64_t i03 = ir/(ne02*ne01);
-            const int64_t i02 = (ir - i03*ne02*ne01)/ne01;
-            const int64_t i01 = (ir - i03*ne02*ne01 - i02*ne01);
+    float * dst_ptr  = (float *) ((char *) dst->data);
+    float * src0_ptr = (float *) ((char *) src0->data);
+    float * src1_ptr = (float *) ((char *) src1->data);
 
-            const int64_t i13 = i03 % ne13;
-            const int64_t i12 = i02 % ne12;
-            const int64_t i11 = i01 % ne11;
-
-            float * dst_ptr  = (float *) ((char *) dst->data  + i03*nb3  + i02*nb2  + i01*nb1 );
-            float * src0_ptr = (float *) ((char *) src0->data + i03*nb03 + i02*nb02 + i01*nb01);
-            float * src1_ptr = (float *) ((char *) src1->data + i13*nb13 + i12*nb12 + i11*nb11);
-
-#ifdef GGML_USE_ACCELERATE
-            vDSP_vadd(src0_ptr, 1, src1_ptr, 1, dst_ptr, 1, ne00);
-#else
-            ggml_vec_add_f32(ne00, dst_ptr, src0_ptr, src1_ptr);
-#endif
-        }
-    } else {
-        // src1 is not contiguous
-        for (int ir = ir0; ir < ir1; ++ir) {
-            // src1 is broadcastable across src0 and dst in i1, i2, i3
-            const int64_t i03 = ir/(ne02*ne01);
-            const int64_t i02 = (ir - i03*ne02*ne01)/ne01;
-            const int64_t i01 = (ir - i03*ne02*ne01 - i02*ne01);
-
-            const int64_t i13 = i03 % ne13;
-            const int64_t i12 = i02 % ne12;
-            const int64_t i11 = i01 % ne11;
-
-            float * dst_ptr  = (float *) ((char *) dst->data  + i03*nb3  + i02*nb2  + i01*nb1 );
-            float * src0_ptr = (float *) ((char *) src0->data + i03*nb03 + i02*nb02 + i01*nb01);
-
-            for (int i0 = 0; i0 < ne0; i0++) {
-                float * src1_ptr = (float *) ((char *) src1->data + i13*nb13 + i12*nb12 + i11*nb11 + i0*nb10);
-
-                dst_ptr[i0] = src0_ptr[i0] + *src1_ptr;
+    for (int ir = ir0; ir < ir1; ++ir) {
+        for(int i = 0; i < ne0; i++) {
+            int64_t dst_idx = ir * ne0 + i;
+            if(broad_cast) {
+                int64_t src1_idx = axis_broadcast == 0 ? (dst_idx % ne_src) :
+                           axis_broadcast == 1 ? (dst_idx / ne0_dest) % ne_src : (dst_idx / block_dest);
+                dst_ptr[dst_idx] = src0_ptr[dst_idx] + src1_ptr[src1_idx];
+            } else {
+                dst_ptr[dst_idx] = src0_ptr[dst_idx] + src1_ptr[dst_idx];
             }
         }
     }
@@ -6879,7 +6884,7 @@ static void ggml_compute_forward_add_f16_f32(
         const struct ggml_tensor * src0,
         const struct ggml_tensor * src1,
         struct ggml_tensor * dst) {
-    GGML_ASSERT(ggml_are_same_shape(src0, src1) && ggml_are_same_shape(src0, dst));
+    GGML_ASSERT(ggml_are_same_shape(src0, dst) && (ggml_are_same_shape(src0, src1) || ggml_can_repeat(src1, src0)));
 
     if (params->type == GGML_TASK_INIT || params->type == GGML_TASK_FINALIZE) {
         return;
@@ -6904,6 +6909,14 @@ static void ggml_compute_forward_add_f16_f32(
     }
 
     GGML_ASSERT(nb00 == sizeof(ggml_fp16_t));
+    GGML_ASSERT(nb10 == sizeof(float)); // src1 always contiguous
+
+    bool broad_cast = dst->op_params[0] != -1;
+    int axis_broadcast = dst->op_params[0];
+    int64_t ne_src = dst->ne[axis_broadcast];
+    int64_t ne0_dest = broad_cast ? dst->ne[dst->op_params[1]] : 0;
+    int64_t ne1_dest = broad_cast ? dst->ne[dst->op_params[2]] : 0;
+    int64_t block_dest = ne0_dest * ne1_dest;
 
     // rows per thread
     const int dr = (nr + nth - 1)/nth;
@@ -6911,43 +6924,37 @@ static void ggml_compute_forward_add_f16_f32(
     // row range for this thread
     const int ir0 = dr*ith;
     const int ir1 = MIN(ir0 + dr, nr);
+    ggml_fp16_t * src0_ptr = (ggml_fp16_t *) ((char *) src0->data);
+    float * src1_ptr = (float *) ((char *) src1->data);
 
-    if (nb10 == sizeof(float)) {
-        if (dst->type == GGML_TYPE_F16) {
-            for (int ir = ir0; ir < ir1; ++ir) {
-                // src0, src1 and dst are same shape => same indices
-                const int i3 = ir/(ne2*ne1);
-                const int i2 = (ir - i3*ne2*ne1)/ne1;
-                const int i1 = (ir - i3*ne2*ne1 - i2*ne1);
-
-                ggml_fp16_t * dst_ptr  = (ggml_fp16_t *) ((char *) dst->data  + i3*nb3  + i2*nb2  + i1*nb1);
-                ggml_fp16_t * src0_ptr = (ggml_fp16_t *) ((char *) src0->data + i3*nb03 + i2*nb02 + i1*nb01);
-                float *       src1_ptr = (float *)       ((char *) src1->data + i3*nb13 + i2*nb12 + i1*nb11);
-
-                for (int i = 0; i < ne0; i++) {
-                    dst_ptr[i] = GGML_FP32_TO_FP16(GGML_FP16_TO_FP32(src0_ptr[i]) + src1_ptr[i]);
-                }
-            }
-        } else {
-            for (int ir = ir0; ir < ir1; ++ir) {
-                // src0, src1 and dst are same shape => same indices
-                const int i3 = ir/(ne2*ne1);
-                const int i2 = (ir - i3*ne2*ne1)/ne1;
-                const int i1 = (ir - i3*ne2*ne1 - i2*ne1);
-
-                float *       dst_ptr  = (float *)       ((char *) dst->data  + i3*nb3  + i2*nb2  + i1*nb1);
-                ggml_fp16_t * src0_ptr = (ggml_fp16_t *) ((char *) src0->data + i3*nb03 + i2*nb02 + i1*nb01);
-                float *       src1_ptr = (float *)       ((char *) src1->data + i3*nb13 + i2*nb12 + i1*nb11);
-
-                for (int i = 0; i < ne0; i++) {
-                    dst_ptr[i] = GGML_FP16_TO_FP32(src0_ptr[i]) + src1_ptr[i];
+    if(dst->type == GGML_TYPE_F16) {
+        ggml_fp16_t * dst_ptr  = (ggml_fp16_t *) ((char *) dst->data);
+        for (int ir = ir0; ir < ir1; ++ir) {
+            for(int i = 0; i < ne0; i++) {
+                int64_t dst_idx = ir * ne0 + i;
+                if(broad_cast) {
+                    int64_t src1_idx = axis_broadcast == 0 ? (dst_idx % ne_src) :
+                            axis_broadcast == 1 ? (dst_idx / ne0_dest) % ne_src : (dst_idx / block_dest);
+                    dst_ptr[dst_idx] = GGML_FP32_TO_FP16(GGML_FP16_TO_FP32(src0_ptr[dst_idx]) + src1_ptr[src1_idx]);
+                } else {
+                    dst_ptr[dst_idx] = GGML_FP32_TO_FP16(GGML_FP16_TO_FP32(src0_ptr[dst_idx]) + src1_ptr[dst_idx]);
                 }
             }
         }
-    }
-    else {
-        // src1 is not contiguous
-        GGML_ASSERT(false);
+    } else {
+       float * dst_ptr  = (float *) ((char *) dst->data);
+        for (int ir = ir0; ir < ir1; ++ir) {
+            for(int i = 0; i < ne0; i++) {
+                int64_t dst_idx = ir * ne0 + i;
+                if(broad_cast) {
+                    int64_t src1_idx = axis_broadcast == 0 ? (dst_idx % ne_src) :
+                            axis_broadcast == 1 ? (dst_idx / ne0_dest) % ne_src : (dst_idx / block_dest);
+                    dst_ptr[dst_idx] = GGML_FP16_TO_FP32(src0_ptr[dst_idx]) + src1_ptr[src1_idx];
+                } else {
+                    dst_ptr[dst_idx] = GGML_FP16_TO_FP32(src0_ptr[dst_idx]) + src1_ptr[dst_idx];
+                }
+            }
+        }
     }
 }
 
@@ -6956,7 +6963,7 @@ static void ggml_compute_forward_add_f16_f16(
         const struct ggml_tensor * src0,
         const struct ggml_tensor * src1,
         struct ggml_tensor * dst) {
-    GGML_ASSERT(ggml_are_same_shape(src0, src1) && ggml_are_same_shape(src0, dst));
+    GGML_ASSERT(ggml_are_same_shape(src0, dst) && (ggml_are_same_shape(src0, src1) || ggml_can_repeat(src1, src0)));
 
     if (params->type == GGML_TASK_INIT || params->type == GGML_TASK_FINALIZE) {
         return;
@@ -6975,6 +6982,14 @@ static void ggml_compute_forward_add_f16_f16(
 
     GGML_ASSERT( nb0 == sizeof(ggml_fp16_t));
     GGML_ASSERT(nb00 == sizeof(ggml_fp16_t));
+    GGML_ASSERT(nb10 == sizeof(ggml_fp16_t)); // src1 always contiguous
+
+    bool broad_cast = dst->op_params[0] != -1;
+    int axis_broadcast = dst->op_params[0];
+    int64_t ne_src = dst->ne[axis_broadcast];
+    int64_t ne0_dest = broad_cast ? dst->ne[dst->op_params[1]] : 0;
+    int64_t ne1_dest = broad_cast ? dst->ne[dst->op_params[2]] : 0;
+    int64_t block_dest = ne0_dest * ne1_dest;
 
     // rows per thread
     const int dr = (nr + nth - 1)/nth;
@@ -6983,25 +6998,21 @@ static void ggml_compute_forward_add_f16_f16(
     const int ir0 = dr*ith;
     const int ir1 = MIN(ir0 + dr, nr);
 
-    if (nb10 == sizeof(ggml_fp16_t)) {
-        for (int ir = ir0; ir < ir1; ++ir) {
-            // src0, src1 and dst are same shape => same indices
-            const int i3 = ir/(ne2*ne1);
-            const int i2 = (ir - i3*ne2*ne1)/ne1;
-            const int i1 = (ir - i3*ne2*ne1 - i2*ne1);
+    ggml_fp16_t * src0_ptr = (ggml_fp16_t *) ((char *) src0->data);
+    ggml_fp16_t * src1_ptr = (ggml_fp16_t *) ((char *) src1->data);
+    ggml_fp16_t * dst_ptr  = (ggml_fp16_t *) ((char *) dst->data);
 
-            ggml_fp16_t * dst_ptr  = (ggml_fp16_t *) ((char *) dst->data  + i3*nb3  + i2*nb2  + i1*nb1);
-            ggml_fp16_t * src0_ptr = (ggml_fp16_t *) ((char *) src0->data + i3*nb03 + i2*nb02 + i1*nb01);
-            ggml_fp16_t * src1_ptr = (ggml_fp16_t *) ((char *) src1->data + i3*nb13 + i2*nb12 + i1*nb11);
-
-            for (int i = 0; i < ne0; i++) {
-                dst_ptr[i] = GGML_FP32_TO_FP16(GGML_FP16_TO_FP32(src0_ptr[i]) + GGML_FP16_TO_FP32(src1_ptr[i]));
+    for (int ir = ir0; ir < ir1; ++ir) {
+        for(int i = 0; i < ne0; i++) {
+            int64_t dst_idx = ir * ne0 + i;
+            if(broad_cast) {
+                int64_t src1_idx = axis_broadcast == 0 ? (dst_idx % ne_src) :
+                        axis_broadcast == 1 ? (dst_idx / ne0_dest) % ne_src : (dst_idx / block_dest);
+                dst_ptr[dst_idx] = GGML_FP32_TO_FP16(GGML_FP16_TO_FP32(src0_ptr[dst_idx]) +  GGML_FP32_TO_FP16(src1_ptr[src1_idx]));
+            } else {
+                dst_ptr[dst_idx] = GGML_FP32_TO_FP16(GGML_FP16_TO_FP32(src0_ptr[dst_idx]) +  GGML_FP32_TO_FP16(src1_ptr[dst_idx]));
             }
         }
-    }
-    else {
-        // src1 is not contiguous
-        GGML_ASSERT(false);
     }
 }
 
@@ -7586,7 +7597,7 @@ static void ggml_compute_forward_mul_f32(
         const struct ggml_tensor * src0,
         const struct ggml_tensor * src1,
         struct ggml_tensor * dst) {
-    GGML_ASSERT(ggml_can_repeat_rows(src1, src0) && ggml_are_same_shape(src0, dst));
+    GGML_ASSERT(ggml_are_same_shape(src0, dst) && (ggml_are_same_shape(src0, src1) || ggml_can_repeat(src1, src0)));
 
     if (params->type == GGML_TASK_INIT || params->type == GGML_TASK_FINALIZE) {
         return;
@@ -7609,53 +7620,28 @@ static void ggml_compute_forward_mul_f32(
 
     GGML_ASSERT( nb0 == sizeof(float));
     GGML_ASSERT(nb00 == sizeof(float));
-    GGML_ASSERT(ne00 == ne10);
+    GGML_ASSERT(nb10 == sizeof(float)); // src1 always contiguous
 
-    if (nb10 == sizeof(float)) {
-        for (int64_t ir = ith; ir < nr; ir += nth) {
-            // src0 and dst are same shape => same indices
-            const int64_t i03 = ir/(ne02*ne01);
-            const int64_t i02 = (ir - i03*ne02*ne01)/ne01;
-            const int64_t i01 = (ir - i03*ne02*ne01 - i02*ne01);
+    bool broad_cast = dst->op_params[0] != -1;
+    int axis_broadcast = dst->op_params[0];
+    int64_t ne_src = dst->ne[axis_broadcast];
+    int64_t ne0_dest = broad_cast ? dst->ne[dst->op_params[1]] : 0;
+    int64_t ne1_dest = broad_cast ? dst->ne[dst->op_params[2]] : 0;
+    int64_t block_dest = ne0_dest * ne1_dest;
 
-            const int64_t i13 = i03 % ne13;
-            const int64_t i12 = i02 % ne12;
-            const int64_t i11 = i01 % ne11;
+    float * dst_ptr  = (float *) ((char *) dst->data);
+    float * src0_ptr = (float *) ((char *) src0->data);
+    float * src1_ptr = (float *) ((char *) src1->data);
 
-            float * dst_ptr  = (float *) ((char *) dst->data  + i03*nb3  + i02*nb2  + i01*nb1 );
-            float * src0_ptr = (float *) ((char *) src0->data + i03*nb03 + i02*nb02 + i01*nb01);
-            float * src1_ptr = (float *) ((char *) src1->data + i13*nb13 + i12*nb12 + i11*nb11);
-
-#ifdef GGML_USE_ACCELERATE
-            UNUSED(ggml_vec_mul_f32);
-
-            vDSP_vmul( src0_ptr, 1, src1_ptr, 1, dst_ptr,  1, ne00);
-#else
-            ggml_vec_mul_f32(ne00, dst_ptr, src0_ptr, src1_ptr);
-#endif
-                // }
-            // }
-        }
-    } else {
-        // src1 is not contiguous
-        for (int64_t ir = ith; ir < nr; ir += nth) {
-            // src0 and dst are same shape => same indices
-            // src1 is broadcastable across src0 and dst in i1, i2, i3
-            const int64_t i03 = ir/(ne02*ne01);
-            const int64_t i02 = (ir - i03*ne02*ne01)/ne01;
-            const int64_t i01 = (ir - i03*ne02*ne01 - i02*ne01);
-
-            const int64_t i13 = i03 % ne13;
-            const int64_t i12 = i02 % ne12;
-            const int64_t i11 = i01 % ne11;
-
-            float * dst_ptr  = (float *) ((char *) dst->data  + i03*nb3  + i02*nb2  + i01*nb1 );
-            float * src0_ptr = (float *) ((char *) src0->data + i03*nb03 + i02*nb02 + i01*nb01);
-
-            for (int64_t i0 = 0; i0 < ne00; i0++) {
-                float * src1_ptr = (float *) ((char *) src1->data + i13*nb13 + i12*nb12 + i11*nb11 + i0*nb10);
-
-                dst_ptr[i0] = src0_ptr[i0] * (*src1_ptr);
+    for (int64_t ir = ith; ir < nr; ir += nth) {
+        for(int i = 0; i < ne0; i++) {
+            int64_t dst_idx = ir * ne0 + i;
+            if(broad_cast) {
+                int64_t src1_idx = axis_broadcast == 0 ? (dst_idx % ne_src) :
+                           axis_broadcast == 1 ? (dst_idx / ne0_dest) % ne_src : (dst_idx / block_dest);
+                dst_ptr[dst_idx] = src0_ptr[dst_idx] * src1_ptr[src1_idx];
+            } else {
+                dst_ptr[dst_idx] = src0_ptr[dst_idx] * src1_ptr[dst_idx];
             }
         }
     }
