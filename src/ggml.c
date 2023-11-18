@@ -2495,6 +2495,7 @@ static struct ggml_tensor * ggml_new_tensor_impl(
         /*.type         =*/ type,
         /*.backend      =*/ GGML_BACKEND_CPU,
         /*.buffer       =*/ NULL,
+        /*.max_depth    =*/ -1,
         /*.n_dims       =*/ n_dims,
         /*.ne           =*/ { 1, 1, 1, 1 },
         /*.nb           =*/ { 0, 0, 0, 0 },
@@ -15043,6 +15044,7 @@ static void ggml_visit_parents(struct ggml_cgraph * cgraph, struct ggml_tensor *
         return;
     }
 
+#if 0
     for (int i = 0; i < GGML_MAX_SRC; ++i) {
         const int k =
             (cgraph->order == GGML_CGRAPH_EVAL_ORDER_LEFT_TO_RIGHT) ? i :
@@ -15052,6 +15054,32 @@ static void ggml_visit_parents(struct ggml_cgraph * cgraph, struct ggml_tensor *
             ggml_visit_parents(cgraph, node->src[k]);
         }
     }
+#else
+    // visit parents by max_depth order
+    struct ggml_tensor * sorted_src[GGML_MAX_SRC] = {0};
+    int n_src = 0;
+    for (int i = 0; i < GGML_MAX_SRC; ++i) {
+        if (!node->src[i]) {
+            break;
+        }
+        sorted_src[n_src++] = node->src[i];
+    }
+    // sort
+    for (int i = 0; i < n_src; ++i) {
+        for (int j = i + 1; j < n_src; ++j) {
+            if (sorted_src[i]->max_depth < sorted_src[j]->max_depth) {
+                struct ggml_tensor * tmp = sorted_src[i];
+                sorted_src[i] = sorted_src[j];
+                sorted_src[j] = tmp;
+            }
+        }
+    }
+    // visit
+    for (int i = 0; i < n_src; ++i) {
+        ggml_visit_parents(cgraph, sorted_src[i]);
+    }
+#endif
+
 
     if (node->op == GGML_OP_NONE && node->grad == NULL) {
         // reached a leaf node, not part of the gradient graph (e.g. a constant)
@@ -15078,6 +15106,17 @@ static void ggml_visit_parents(struct ggml_cgraph * cgraph, struct ggml_tensor *
     }
 }
 
+static void ggml_set_node_max_depth(struct ggml_tensor * node) {
+    if (node->max_depth == -1) {
+        for (int i = 0; i < GGML_MAX_SRC; ++i) {
+            if (node->src[i]) {
+                ggml_set_node_max_depth(node->src[i]);
+                node->max_depth = MAX(node->max_depth, node->src[i]->max_depth + 1);
+            }
+        }
+    }
+}
+
 static void ggml_build_forward_impl(struct ggml_cgraph * cgraph, struct ggml_tensor * tensor, bool expand) {
     if (!expand) {
         // TODO: this branch isn't accessible anymore, maybe move this to ggml_build_forward_expand
@@ -15086,6 +15125,9 @@ static void ggml_build_forward_impl(struct ggml_cgraph * cgraph, struct ggml_ten
 
     const int n0 = cgraph->n_nodes;
     UNUSED(n0);
+
+    // calculate depths of all nodes
+    ggml_set_node_max_depth(tensor);
 
     ggml_visit_parents(cgraph, tensor);
 

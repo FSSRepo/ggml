@@ -485,6 +485,7 @@ extern "C" {
 
         struct ggml_backend_buffer * buffer;
 
+        int max_depth;
         int     n_dims;
         int64_t ne[GGML_MAX_DIMS]; // number of elements
         size_t  nb[GGML_MAX_DIMS]; // stride in bytes:
