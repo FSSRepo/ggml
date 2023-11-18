@@ -6286,9 +6286,9 @@ inline void ggml_cuda_op_add(
 
     GGML_ASSERT(src1->type == GGML_TYPE_F32);
 
-    bool broad_cast = dst->op_params[0] != -1;
     int axis_broadcast = dst->op_params[0];
-    int64_t ne_src = dst->ne[axis_broadcast];
+    bool broad_cast = axis_broadcast != -1;
+    int64_t ne_src =   broad_cast ? dst->ne[axis_broadcast] : 0;
     int64_t ne0_dest = broad_cast ? dst->ne[dst->op_params[1]] : 0;
     int64_t ne1_dest = broad_cast ? dst->ne[dst->op_params[2]] : 0;
     int64_t block_dest = ne0_dest * ne1_dest;
@@ -6333,9 +6333,9 @@ inline void ggml_cuda_op_mul(
     GGML_ASSERT(src1->type == GGML_TYPE_F32);
     GGML_ASSERT( dst->type == GGML_TYPE_F32);
 
-    bool broad_cast = dst->op_params[0] != -1;
     int axis_broadcast = dst->op_params[0];
-    int64_t ne_src = dst->ne[axis_broadcast];
+    bool broad_cast = axis_broadcast != -1;
+    int64_t ne_src =   broad_cast ? dst->ne[axis_broadcast] : 0;
     int64_t ne0_dest = broad_cast ? dst->ne[dst->op_params[1]] : 0;
     int64_t ne1_dest = broad_cast ? dst->ne[dst->op_params[2]] : 0;
     int64_t block_dest = ne0_dest * ne1_dest;

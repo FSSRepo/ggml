@@ -6847,12 +6847,12 @@ static void ggml_compute_forward_add_f32(
     GGML_ASSERT(nb00 == sizeof(float));
     GGML_ASSERT(nb10 == sizeof(float)); // src1 always contiguous
 
-    bool broad_cast = dst->op_params[0] != -1;
     int axis_broadcast = dst->op_params[0];
-    const int ne_src = dst->ne[axis_broadcast];
-    const int64_t ne0_dest = broad_cast ? dst->ne[dst->op_params[1]] : 0;
-    const int64_t ne1_dest = broad_cast ? dst->ne[dst->op_params[2]] : 0;
-    const int64_t block_dest = ne0_dest * ne1_dest;
+    bool broad_cast = axis_broadcast != -1;
+    int64_t ne_src =   broad_cast ? dst->ne[axis_broadcast] : 0;
+    int64_t ne0_dest = broad_cast ? dst->ne[dst->op_params[1]] : 0;
+    int64_t ne1_dest = broad_cast ? dst->ne[dst->op_params[2]] : 0;
+    int64_t block_dest = ne0_dest * ne1_dest;
 
     // rows per thread
     const int dr = (nr + nth - 1)/nth;
@@ -6911,9 +6911,9 @@ static void ggml_compute_forward_add_f16_f32(
     GGML_ASSERT(nb00 == sizeof(ggml_fp16_t));
     GGML_ASSERT(nb10 == sizeof(float)); // src1 always contiguous
 
-    bool broad_cast = dst->op_params[0] != -1;
     int axis_broadcast = dst->op_params[0];
-    int64_t ne_src = dst->ne[axis_broadcast];
+    bool broad_cast = axis_broadcast != -1;
+    int64_t ne_src =   broad_cast ? dst->ne[axis_broadcast] : 0;
     int64_t ne0_dest = broad_cast ? dst->ne[dst->op_params[1]] : 0;
     int64_t ne1_dest = broad_cast ? dst->ne[dst->op_params[2]] : 0;
     int64_t block_dest = ne0_dest * ne1_dest;
@@ -6984,9 +6984,9 @@ static void ggml_compute_forward_add_f16_f16(
     GGML_ASSERT(nb00 == sizeof(ggml_fp16_t));
     GGML_ASSERT(nb10 == sizeof(ggml_fp16_t)); // src1 always contiguous
 
-    bool broad_cast = dst->op_params[0] != -1;
     int axis_broadcast = dst->op_params[0];
-    int64_t ne_src = dst->ne[axis_broadcast];
+    bool broad_cast = axis_broadcast != -1;
+    int64_t ne_src =   broad_cast ? dst->ne[axis_broadcast] : 0;
     int64_t ne0_dest = broad_cast ? dst->ne[dst->op_params[1]] : 0;
     int64_t ne1_dest = broad_cast ? dst->ne[dst->op_params[2]] : 0;
     int64_t block_dest = ne0_dest * ne1_dest;
@@ -7622,9 +7622,9 @@ static void ggml_compute_forward_mul_f32(
     GGML_ASSERT(nb00 == sizeof(float));
     GGML_ASSERT(nb10 == sizeof(float)); // src1 always contiguous
 
-    bool broad_cast = dst->op_params[0] != -1;
     int axis_broadcast = dst->op_params[0];
-    int64_t ne_src = dst->ne[axis_broadcast];
+    bool broad_cast = axis_broadcast != -1;
+    int64_t ne_src =   broad_cast ? dst->ne[axis_broadcast] : 0;
     int64_t ne0_dest = broad_cast ? dst->ne[dst->op_params[1]] : 0;
     int64_t ne1_dest = broad_cast ? dst->ne[dst->op_params[2]] : 0;
     int64_t block_dest = ne0_dest * ne1_dest;
