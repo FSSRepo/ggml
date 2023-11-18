@@ -79,6 +79,11 @@ static bool ggml_is_view(struct ggml_tensor * t) {
     return t->view_src != NULL;
 }
 
+#ifdef GGML_ALLOCATOR_DEBUG
+static int64_t op_memory[GGML_OP_COUNT];
+static int64_t op_counts[GGML_OP_COUNT];
+#endif
+
 void ggml_tallocr_alloc(ggml_tallocr_t alloc, struct ggml_tensor * tensor) {
     GGML_ASSERT(!ggml_is_view(tensor)); // views generally get data pointer from one of their sources
     GGML_ASSERT(tensor->data == NULL); // avoid allocating tensor which already has memory allocated
@@ -137,13 +142,37 @@ void ggml_tallocr_alloc(ggml_tallocr_t alloc, struct ggml_tensor * tensor) {
 
 #ifdef GGML_ALLOCATOR_DEBUG
     add_allocated_tensor(alloc, tensor);
-    size_t cur_max = (char*)addr - (char*)alloc->data + size;
+    size_t cur_max = (char*)addr - (char*)alloc->base + size;
     if (cur_max > alloc->max_size) {
-        printf("max_size = %.2f MB: tensors: ", cur_max / 1024.0 / 1024.0);
+        printf("===== ggml-alloc debug =====\n max alloc size = %.2f MB\n", cur_max / 1024.0 / 1024.0);
+        // reset
+        for(int i = 0;i < GGML_OP_COUNT; i++) { op_memory[i] = 0; op_counts[i] = 0; }
         for (int i = 0; i < 1024; i++) {
             if (alloc->allocated_tensors[i]) {
-                printf("%s (%.2f MB) ", alloc->allocated_tensors[i]->name, ggml_nbytes(alloc->allocated_tensors[i]) / 1024.0 / 1024.0);
+                if(i == 0) {
+                    printf("| %3s | %10s | %35s |       shape          | mem size\n",  "No.", "operation", "Tensor name");
+                }
+                struct ggml_tensor* tsr = alloc->allocated_tensors[i];
+                if(tsr->op == GGML_OP_NONE) {
+                    break;
+                }
+                op_memory[tsr->op] += ggml_nbytes(tsr);
+                op_counts[tsr->op] += 1;
+                printf("| %3i | %10s | %35s | [%4i, %4i, %4i, %4i] | %4.2f MB\n", i + 1,
+                    ggml_op_name(tsr->op),
+                    tsr->name, tsr->ne[0], tsr->ne[1], tsr->ne[2], tsr->ne[3],
+                    ggml_nbytes(tsr) / 1024.0 / 1024.0);
             }
+        }
+        printf("Totals:\n");
+        for (int i = 0; i < GGML_OP_COUNT; i++) {
+            if(op_counts[i] == 0) {
+                continue;
+            }
+            printf("| %10s | %2i | %4.2f MB\n", ggml_op_name(i)
+                    ,
+                    op_counts[i],
+                    op_memory[i] / 1024.0 / 1024.0);
         }
         printf("\n");
     }
