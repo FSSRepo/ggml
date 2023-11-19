@@ -6854,22 +6854,15 @@ static void ggml_compute_forward_add_f32(
     int64_t ne1_dest = broad_cast ? dst->ne[dst->op_params[2]] : 0;
     int64_t block_dest = ne0_dest * ne1_dest;
 
-    // rows per thread
-    const int dr = (nr + nth - 1)/nth;
-
-    // row range for this thread
-    const int ir0 = dr*ith;
-    const int ir1 = MIN(ir0 + dr, nr);
-
     float * dst_ptr  = (float *) ((char *) dst->data);
     float * src0_ptr = (float *) ((char *) src0->data);
     float * src1_ptr = (float *) ((char *) src1->data);
 
-    for (int ir = ir0; ir < ir1; ++ir) {
-        for(int i = 0; i < ne0; i++) {
-            int64_t dst_idx = ir * ne0 + i;
+    for (int ir = ith; ir < nr; ir += nth) {
+        for(int i = 0; i < ne00; i++) {
+            int dst_idx = ir * ne00 + i;
             if(broad_cast) {
-                int64_t src1_idx = axis_broadcast == 0 ? (dst_idx % ne_src) :
+                int src1_idx = axis_broadcast == 0 ? (dst_idx % ne_src) :
                            axis_broadcast == 1 ? (dst_idx / ne0_dest) % ne_src : (dst_idx / block_dest);
                 dst_ptr[dst_idx] = src0_ptr[dst_idx] + src1_ptr[src1_idx];
             } else {
@@ -6918,20 +6911,14 @@ static void ggml_compute_forward_add_f16_f32(
     int64_t ne1_dest = broad_cast ? dst->ne[dst->op_params[2]] : 0;
     int64_t block_dest = ne0_dest * ne1_dest;
 
-    // rows per thread
-    const int dr = (nr + nth - 1)/nth;
-
-    // row range for this thread
-    const int ir0 = dr*ith;
-    const int ir1 = MIN(ir0 + dr, nr);
     ggml_fp16_t * src0_ptr = (ggml_fp16_t *) ((char *) src0->data);
     float * src1_ptr = (float *) ((char *) src1->data);
 
     if(dst->type == GGML_TYPE_F16) {
         ggml_fp16_t * dst_ptr  = (ggml_fp16_t *) ((char *) dst->data);
-        for (int ir = ir0; ir < ir1; ++ir) {
-            for(int i = 0; i < ne0; i++) {
-                int64_t dst_idx = ir * ne0 + i;
+        for (int ir = ith; ir < nr; ir += nth) {
+            for(int i = 0; i < ne00; i++) {
+                int dst_idx = ir * ne00 + i;
                 if(broad_cast) {
                     int64_t src1_idx = axis_broadcast == 0 ? (dst_idx % ne_src) :
                             axis_broadcast == 1 ? (dst_idx / ne0_dest) % ne_src : (dst_idx / block_dest);
@@ -6943,9 +6930,9 @@ static void ggml_compute_forward_add_f16_f32(
         }
     } else {
        float * dst_ptr  = (float *) ((char *) dst->data);
-        for (int ir = ir0; ir < ir1; ++ir) {
-            for(int i = 0; i < ne0; i++) {
-                int64_t dst_idx = ir * ne0 + i;
+        for (int ir = ith; ir < nr; ir += nth) {
+            for(int i = 0; i < ne00; i++) {
+                int dst_idx = ir * ne00 + i;
                 if(broad_cast) {
                     int64_t src1_idx = axis_broadcast == 0 ? (dst_idx % ne_src) :
                             axis_broadcast == 1 ? (dst_idx / ne0_dest) % ne_src : (dst_idx / block_dest);
@@ -6991,26 +6978,19 @@ static void ggml_compute_forward_add_f16_f16(
     int64_t ne1_dest = broad_cast ? dst->ne[dst->op_params[2]] : 0;
     int64_t block_dest = ne0_dest * ne1_dest;
 
-    // rows per thread
-    const int dr = (nr + nth - 1)/nth;
-
-    // row range for this thread
-    const int ir0 = dr*ith;
-    const int ir1 = MIN(ir0 + dr, nr);
-
     ggml_fp16_t * src0_ptr = (ggml_fp16_t *) ((char *) src0->data);
     ggml_fp16_t * src1_ptr = (ggml_fp16_t *) ((char *) src1->data);
     ggml_fp16_t * dst_ptr  = (ggml_fp16_t *) ((char *) dst->data);
 
-    for (int ir = ir0; ir < ir1; ++ir) {
-        for(int i = 0; i < ne0; i++) {
-            int64_t dst_idx = ir * ne0 + i;
+    for (int ir = ith; ir < nr; ir += nth) {
+        for(int i = 0; i < ne00; i++) {
+            int dst_idx = ir * ne00 + i;
             if(broad_cast) {
                 int64_t src1_idx = axis_broadcast == 0 ? (dst_idx % ne_src) :
                         axis_broadcast == 1 ? (dst_idx / ne0_dest) % ne_src : (dst_idx / block_dest);
-                dst_ptr[dst_idx] = GGML_FP32_TO_FP16(GGML_FP16_TO_FP32(src0_ptr[dst_idx]) +  GGML_FP32_TO_FP16(src1_ptr[src1_idx]));
+                dst_ptr[dst_idx] = GGML_FP32_TO_FP16(GGML_FP16_TO_FP32(src0_ptr[dst_idx]) +  GGML_FP16_TO_FP32(src1_ptr[src1_idx]));
             } else {
-                dst_ptr[dst_idx] = GGML_FP32_TO_FP16(GGML_FP16_TO_FP32(src0_ptr[dst_idx]) +  GGML_FP32_TO_FP16(src1_ptr[dst_idx]));
+                dst_ptr[dst_idx] = GGML_FP32_TO_FP16(GGML_FP16_TO_FP32(src0_ptr[dst_idx]) +  GGML_FP16_TO_FP32(src1_ptr[dst_idx]));
             }
         }
     }
@@ -7624,7 +7604,7 @@ static void ggml_compute_forward_mul_f32(
 
     int axis_broadcast = dst->op_params[0];
     bool broad_cast = axis_broadcast != -1;
-    int64_t ne_src =   broad_cast ? dst->ne[axis_broadcast] : 0;
+    int ne_src =   broad_cast ? dst->ne[axis_broadcast] : 0;
     int64_t ne0_dest = broad_cast ? dst->ne[dst->op_params[1]] : 0;
     int64_t ne1_dest = broad_cast ? dst->ne[dst->op_params[2]] : 0;
     int64_t block_dest = ne0_dest * ne1_dest;
@@ -7633,11 +7613,11 @@ static void ggml_compute_forward_mul_f32(
     float * src0_ptr = (float *) ((char *) src0->data);
     float * src1_ptr = (float *) ((char *) src1->data);
 
-    for (int64_t ir = ith; ir < nr; ir += nth) {
-        for(int i = 0; i < ne0; i++) {
-            int64_t dst_idx = ir * ne0 + i;
-            if(broad_cast) {
-                int64_t src1_idx = axis_broadcast == 0 ? (dst_idx % ne_src) :
+    for (int ir = ith; ir < nr; ir += nth) {
+        for(int i = 0; i < ne00; i++) {
+            int dst_idx = ir * ne00 + i;
+           if(broad_cast) {
+             int src1_idx = axis_broadcast == 0 ? (dst_idx % ne_src) :
                            axis_broadcast == 1 ? (dst_idx / ne0_dest) % ne_src : (dst_idx / block_dest);
                 dst_ptr[dst_idx] = src0_ptr[dst_idx] * src1_ptr[src1_idx];
             } else {
