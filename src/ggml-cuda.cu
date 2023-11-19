@@ -8250,7 +8250,7 @@ void ggml_cuda_free_scratch() {
 
 //#define CUDA_BENCHMARK
 #ifdef CUDA_BENCHMARK
-static float op_timings[GGML_OP_COUNT];
+static int64_t op_timings[GGML_OP_COUNT];
 static int64_t op_counts[GGML_OP_COUNT];
 #endif
 
@@ -8381,23 +8381,12 @@ bool ggml_cuda_compute_forward(struct ggml_compute_params * params, struct ggml_
         }
     }
 
-    cudaEvent_t start, stop;
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
-
-   cudaEventRecord(start, g_cudaStreams[g_main_device][0]);
+    int64_t start = ggml_time_us();
 #endif
     func(tensor->src[0], tensor->src[1], tensor);
 #ifdef CUDA_BENCHMARK
     cudaStreamSynchronize(g_cudaStreams[g_main_device][0]);
-    cudaEventRecord(stop, g_cudaStreams[g_main_device][0]);
-
-    float time_elapsed = 0;
-    cudaEventElapsedTime(&time_elapsed, start, stop);
-    cudaEventDestroy(start);
-    cudaEventDestroy(stop);
-
-    op_timings[tensor->op] += time_elapsed;
+    op_timings[tensor->op] += (ggml_time_us() - start);
     op_counts[tensor->op] += 1;
 
     if(strcmp(ggml_get_name(tensor), "b-end") == 0) {
@@ -8407,8 +8396,9 @@ bool ggml_cuda_compute_forward(struct ggml_compute_params * params, struct ggml_
             if(op_counts[i] == 0) {
                 continue;
             }
-            printf("[%10s] - %f ms - %i - %f ms\n", ggml_op_name((ggml_op)i), op_timings[i], op_counts[i], op_timings[i] / op_counts[i]);
-            total_time += op_timings[i];
+            float time = op_timings[i] / 1000.0f;
+            printf("[%10s] - %f ms - %i - %f ms\n", ggml_op_name((ggml_op)i), time, op_counts[i], time / op_counts[i]);
+            total_time += time;
         }
         printf("Total Time: %f ms\n", total_time);
     }
