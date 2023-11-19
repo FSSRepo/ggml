@@ -410,6 +410,7 @@ extern "C" {
         GGML_OP_POOL_2D,
 
         GGML_OP_UPSCALE, // nearest interpolate
+        GGML_OP_PAD,
 
         GGML_OP_FLASH_ATTN,
         GGML_OP_FLASH_FF,
@@ -1513,6 +1514,16 @@ extern "C" {
             struct ggml_context * ctx,
             struct ggml_tensor  * a,
             int                   scale_factor);
+
+    // add zero padding tensor
+    // used in stable-diffusion
+    GGML_API struct ggml_tensor * ggml_pad(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * a,
+            int                   p0,
+            int                   p1,
+            int                   p2,
+            int                   p3);
 
     GGML_API struct ggml_tensor * ggml_flash_attn(
             struct ggml_context * ctx,

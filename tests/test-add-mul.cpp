@@ -2,7 +2,7 @@
 #include "ggml/ggml-alloc.h"
 #include "ggml/ggml-backend.h"
 
-//#define GGML_USE_CUBLAS
+#define GGML_USE_CUBLAS
 
 #ifdef GGML_USE_CUBLAS
 #include "ggml-cuda.h"
@@ -29,6 +29,16 @@ struct test_model {
     struct ggml_context * ctx;
 };
 
+void ggml_tensor_set_f32(struct ggml_tensor* tensor, float value, int l, int k = 0, int j = 0, int i = 0) {
+    GGML_ASSERT(tensor->nb[0] == sizeof(float));
+    *(float*)((char*)(tensor->data) + i * tensor->nb[3] + j * tensor->nb[2] + k * tensor->nb[1] + l * tensor->nb[0]) = value;
+}
+
+float ggml_tensor_get_f32(const ggml_tensor* tensor, int l, int k = 0, int j = 0, int i = 0) {
+    GGML_ASSERT(tensor->nb[0] == sizeof(float));
+    return *(float*)((char*)(tensor->data) + i * tensor->nb[3] + j * tensor->nb[2] + k * tensor->nb[1] + l * tensor->nb[0]);
+}
+
 void load_model(test_model & model, bool use_gpu = false) {
 
     // Initialize adata
@@ -44,7 +54,7 @@ void load_model(test_model & model, bool use_gpu = false) {
 
     // Initialize bdata // [2, 1, 1]
     float bdata[2] = {
-        3, 4
+        3, 6
     };
 
     /*
@@ -176,7 +186,7 @@ struct ggml_tensor* compute_graph(const test_model & model, struct ggml_allocr *
 
     // allocate tensors
     ggml_allocr_alloc_graph(allocr, gf);
-    int n_threads = 1;
+    int n_threads = 6;
 
     if (ggml_backend_is_cpu(model.backend)) {
         ggml_backend_cpu_set_n_threads(model.backend, n_threads);
@@ -227,9 +237,13 @@ int main(void)
     printf("\nPerforming test:\n");
 
     bool passed = true;
-    for(int i = 0; i < ggml_nelements(result); i += 2) {
-        printf("%2.2f %2.2f\n", data[i], data[i + 1]);
+    for(int i = 0; i < ggml_nelements(result); i ++) {
+        if(i > 0 && (i % result->ne[0] == 0)) {
+            printf("\n");
+        }
+        printf("%2.2f ", data[i]);
     }
+
     ggml_free(model.ctx);
 
     ggml_backend_buffer_free(model.buffer);

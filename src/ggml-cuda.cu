@@ -683,23 +683,58 @@ __global__ void group_norm_f32(const float  *x,float *dst, int n_channels, int n
 
 __global__ void concat_f32(const float  *x,const float  *y, float *dst, int ne02) {
     // operation
-	int offset_dst = threadIdx.x + blockIdx.z * blockDim.x + blockIdx.y * blockDim.x * gridDim.z + blockIdx.x * blockDim.x * gridDim.z * gridDim.y;
-	if (blockIdx.y < ne02) { // src0
-		int offset_src =  threadIdx.x + blockIdx.z * blockDim.x + blockIdx.y * blockDim.x *  gridDim.z + blockIdx.x * blockDim.x *  gridDim.z * ne02;
-                dst[offset_dst] = x[offset_src];
+	int offset_dst =
+        blockIdx.x +
+        blockIdx.y * gridDim.x +
+        blockIdx.z * gridDim.x * gridDim.y +
+        threadIdx.x * gridDim.x * gridDim.y * gridDim.z;
+	if (blockIdx.z < ne02) { // src0
+		int offset_src =
+            blockIdx.x +
+            blockIdx.y * gridDim.x +
+            blockIdx.z * gridDim.x * gridDim.y +
+            threadIdx.x * gridDim.x * gridDim.y * ne02;
+            dst[offset_dst] = x[offset_src];
 	} else {
-		int offset_src =  threadIdx.x + blockIdx.z * blockDim.x + (blockIdx.y - ne02) * blockDim.x *  gridDim.z + blockIdx.x * blockDim.x *  gridDim.z * ne02;
-                dst[offset_dst] = y[offset_src];
+		int offset_src =
+            blockIdx.x +
+            blockIdx.y * gridDim.x +
+            (blockIdx.z - ne02) * gridDim.x *  gridDim.y +
+            threadIdx.x * gridDim.x * gridDim.y * ne02;
+            dst[offset_dst] = y[offset_src];
 	}
 }
 
 __global__ void upscale_f32(const float  *x, float *dst, int nb01, int nb02, int nb03, int scale_factor) {
 	// operation
-	int i01 = blockIdx.z / scale_factor;
-	int i00 = threadIdx.x / scale_factor;
-	int offset_src = i00 + i01 * nb01 + blockIdx.y * nb02 + blockIdx.x * nb03;
-	int offset_dst = threadIdx.x + blockIdx.z * blockDim.x + blockIdx.y * blockDim.x * gridDim.z + blockIdx.x * blockDim.x * gridDim.z * gridDim.y;
+	int i00 = blockIdx.x / scale_factor;
+    int i01 = blockIdx.y / scale_factor;
+	int offset_src = i00 + i01 * nb01 +
+        blockIdx.z * nb02 +
+        threadIdx.x * nb03;
+	int offset_dst =
+        blockIdx.x +
+        blockIdx.y * gridDim.x +
+        blockIdx.z * gridDim.x * gridDim.y +
+        threadIdx.x * gridDim.x * gridDim.y * gridDim.z;
 	dst[offset_dst] = x[offset_src];
+}
+
+__global__ void pad_f32(const float  *x, float *dst, int ne00, int ne01, int ne02, int ne03) {
+	// operation
+	int offset_dst = blockIdx.x +
+        blockIdx.y * gridDim.x +
+        blockIdx.z * gridDim.x * gridDim.y +
+        threadIdx.x * gridDim.x * gridDim.y * gridDim.z;
+    if(blockIdx.x < ne00 && blockIdx.y < ne01 && blockIdx.z < ne02 && threadIdx.x < ne03) {
+        int offset_src = blockIdx.x +
+        blockIdx.y * ne00 +
+        blockIdx.z * ne00 * ne01 +
+        threadIdx.x * ne00 * ne01 * ne03;
+        dst[offset_dst] = x[offset_src];
+    } else {
+        dst[offset_dst] = 0.0f;
+    }
 }
 
 static __device__ __forceinline__ float warp_reduce_sum(float x) {
@@ -4915,16 +4950,20 @@ static void group_norm_f32_cuda(const float * x, float * dst, const int num_grou
 }
 
 static void concat_f32_cuda(const float * x, const float * y, float * dst, const int ne0, int ne1, int ne2, const int ne3, int ne02, cudaStream_t stream) {
-    dim3 gridDim(ne3, ne2, ne1);
-    GGML_ASSERT(ne0 <= 1024);
-    concat_f32<<<gridDim, ne0, 0, stream>>>(x, y, dst, ne02);
+    dim3 gridDim(ne0, ne1, ne2);
+    concat_f32<<<gridDim, ne3, 0, stream>>>(x, y, dst, ne02);
 }
 
 static void upscale_f32_cuda(const float * x, float * dst, const int ne00, const int ne01, const int ne02, const int ne03, const int scale_factor, cudaStream_t stream) {
-    dim3 gridDim(ne03, ne02, /* ne1 */ (ne01 * scale_factor));
-    int block_size = (ne00 * scale_factor);
-    GGML_ASSERT(block_size <= 1024);
-    upscale_f32<<<gridDim, block_size, 0, stream>>>(x, dst, ne00, ne00 * ne01, ne00 * ne01 * ne02, scale_factor);
+    dim3 gridDim((ne00 * scale_factor), (ne01 * scale_factor), ne02);
+    upscale_f32<<<gridDim, ne03, 0, stream>>>(x, dst, ne00, ne00 * ne01, ne00 * ne01 * ne02, scale_factor);
+}
+
+static void pad_f32_cuda(const float * x, float * dst,
+    const int ne00, const int ne01, const int ne02, const int ne03,
+    const int ne0, const int ne1, const int ne2, const int ne3, cudaStream_t stream) {
+    dim3 gridDim(ne0, ne1, ne2);
+    pad_f32<<<gridDim, ne3, 0, stream>>>(x, dst, ne00, ne01, ne02, ne03);
 }
 
 static void rms_norm_f32_cuda(const float * x, float * dst, const int ncols, const int nrows, const float eps, cudaStream_t stream) {
@@ -6463,6 +6502,21 @@ inline void ggml_cuda_op_upscale(
     (void) dst;
 }
 
+inline void ggml_cuda_op_pad(
+    const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst,
+    const float * src0_dd, const float * src1_dd, float * dst_dd, const cudaStream_t & main_stream) {
+
+    GGML_ASSERT(src0->type == GGML_TYPE_F32);
+    GGML_ASSERT(dst->type == GGML_TYPE_F32);
+
+    pad_f32_cuda(src0_dd, dst_dd,
+        src0->ne[0], src0->ne[1], src0->ne[2], src0->ne[3],
+        dst->ne[0], dst->ne[1], dst->ne[2], dst->ne[3], main_stream);
+
+    (void) src1;
+    (void) dst;
+}
+
 inline void ggml_cuda_op_rms_norm(
     const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst,
     const float * src0_dd, const float * src1_dd, float * dst_dd, const cudaStream_t & main_stream) {
@@ -7545,6 +7599,10 @@ static void ggml_cuda_upscale(const ggml_tensor * src0, const ggml_tensor * src1
     ggml_cuda_op_flatten(src0, src1, dst, ggml_cuda_op_upscale);
 }
 
+static void ggml_cuda_pad(const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
+    ggml_cuda_op_flatten(src0, src1, dst, ggml_cuda_op_pad);
+}
+
 static void ggml_cuda_rms_norm(const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
     ggml_cuda_op_flatten(src0, src1, dst, ggml_cuda_op_rms_norm);
 }
@@ -8315,6 +8373,9 @@ bool ggml_cuda_compute_forward(struct ggml_compute_params * params, struct ggml_
             break;
         case GGML_OP_UPSCALE:
             func = ggml_cuda_upscale;
+            break;
+        case GGML_OP_PAD:
+            func = ggml_cuda_pad;
             break;
         case GGML_OP_RMS_NORM:
             func = ggml_cuda_rms_norm;
