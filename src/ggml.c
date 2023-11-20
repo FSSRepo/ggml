@@ -19038,9 +19038,9 @@ void gguf_write_to_file(const struct gguf_context * ctx, const char * fname, boo
 
             fwrite(&kv->key.n, 1, sizeof(kv->key.n), file);
             fwrite(kv->key.data, 1, kv->key.n, file);
-            offset += kv->key.n + 4;
+            offset += kv->key.n + sizeof(kv->key.n);
             fwrite(&kv->type, 1, sizeof(kv->type), file);
-            offset += 4;
+            offset += sizeof(kv->type);
             switch (kv->type) {
                 case GGUF_TYPE_UINT8:   fwrite(&kv->value.uint8,1,   sizeof(kv->value.uint8), file); offset += sizeof(kv->value.uint8); break;
                 case GGUF_TYPE_INT8:    fwrite (&kv->value.int8,1,    sizeof(kv->value.int8), file); offset += sizeof(kv->value.int8); break;
@@ -19055,7 +19055,7 @@ void gguf_write_to_file(const struct gguf_context * ctx, const char * fname, boo
                 case GGUF_TYPE_BOOL:    fwrite (&kv->value.bool_,1,   sizeof(kv->value.bool_) , file ); offset += sizeof(kv->value.bool_); break;
                 case GGUF_TYPE_STRING: {
                     fwrite(&kv->value.str.n, 1, sizeof(kv->value.str.n), file);
-                    fwrite(&kv->value.str.data, 1, kv->value.str.n, file);
+                    fwrite(kv->value.str.data, 1, kv->value.str.n, file);
                     offset += (kv->value.str.n + sizeof(kv->value.str.n));
                     break;
                 }
@@ -19086,7 +19086,7 @@ void gguf_write_to_file(const struct gguf_context * ctx, const char * fname, boo
                                     for (uint32_t j = 0; j < kv->value.arr.n; ++j) {
                                         struct gguf_str str = ((struct gguf_str *)kv->value.arr.data)[j];
                                         fwrite(&str.n, 1, sizeof(str.n), file);
-                                        fwrite(&str.data, 1, str.n, file);
+                                        fwrite(str.data, 1, str.n, file);
                                         offset += (str.n + sizeof(str.n));
                                     }
                                 } break;
@@ -19102,7 +19102,7 @@ void gguf_write_to_file(const struct gguf_context * ctx, const char * fname, boo
         for (uint32_t i = 0; i < ctx->header.n_tensors; ++i) {
             struct gguf_tensor_info * info = &ctx->infos[i];
 
-            fwrite(info->name.n, 1, sizeof(info->name.n), file);
+            fwrite(&info->name.n, 1, sizeof(info->name.n), file);
             fwrite(info->name.data, 1, info->name.n, file);
             offset += info->name.n + sizeof(info->name.n);
 
