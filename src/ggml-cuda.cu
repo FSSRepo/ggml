@@ -8456,7 +8456,7 @@ bool ggml_cuda_compute_forward(struct ggml_compute_params * params, struct ggml_
     }
 
 #ifdef CUDA_BENCHMARK
-    if(strcmp(ggml_get_name(tensor), "b-start") == 0) {
+    if(strcmp(ggml_get_name(tensor), "bench-start") == 0) {
         for(int i = 0; i < GGML_OP_COUNT; i++) {
             op_timings[i] = 0;
             op_counts[i] = 0;
@@ -8471,7 +8471,7 @@ bool ggml_cuda_compute_forward(struct ggml_compute_params * params, struct ggml_
     op_timings[tensor->op] += (ggml_time_us() - start);
     op_counts[tensor->op] += 1;
 
-    if(strcmp(ggml_get_name(tensor), "b-end") == 0) {
+    if(strcmp(ggml_get_name(tensor), "bench-end") == 0) {
         float total_time = 0;
         printf("========== CUDA Timings =========\n");
         for(int i = 0; i < GGML_OP_COUNT; i++) {

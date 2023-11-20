@@ -2109,7 +2109,7 @@ extern "C" {
     //
 
     // write the entire context to a binary file
-    GGML_API void gguf_write_to_file(const struct gguf_context * ctx, const char * fname, bool only_meta);
+    GGML_API void gguf_write_to_file(const struct gguf_context * ctx, const char * fname, bool only_meta, bool stream);
 
     // get the size in bytes of the meta data (header, kv pairs, tensor info) including padding
     GGML_API size_t gguf_get_meta_size(const struct gguf_context * ctx);

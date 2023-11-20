@@ -12018,7 +12018,9 @@ static void ggml_compute_forward_flash_attn_f32(
 
     GGML_ASSERT(ne0 == D);
     GGML_ASSERT(ne1 == N);
-    GGML_ASSERT(P >= 0);
+    if(masked) {
+        GGML_ASSERT(P >= 0);
+    }
 
     GGML_ASSERT(nbq0 == sizeof(float));
     GGML_ASSERT(nbk0 == sizeof(float));
@@ -19016,19 +19018,156 @@ static void gguf_write_to_buf(const struct gguf_context * ctx, struct gguf_buf *
     }
 }
 
-void gguf_write_to_file(const struct gguf_context * ctx, const char * fname, bool only_meta) {
+void gguf_write_to_file(const struct gguf_context * ctx, const char * fname, bool only_meta, bool stream) {
     FILE * file = fopen(fname, "wb");
     if (!file) {
         GGML_ASSERT(false && "failed to open file for writing");
     }
 
-    struct gguf_buf buf = gguf_buf_init(16*1024);
+    if(stream) {
+        int offset = 0;
+        fwrite(&ctx->header.magic, 1,     sizeof(ctx->header.magic), file);
+        fwrite(&ctx->header.version, 1,     sizeof(ctx->header.version), file);
+        fwrite(&ctx->header.n_tensors, 1,     sizeof(ctx->header.n_tensors), file);
+        fwrite(&ctx->header.n_kv, 1,     sizeof(ctx->header.n_kv), file);
+        offset += 4 + 4 + 8 + 8;
 
-    gguf_write_to_buf(ctx, &buf, only_meta);
+        // write key-value pairs
+        for (uint32_t i = 0; i < ctx->header.n_kv; ++i) {
+            struct gguf_kv * kv = &ctx->kv[i];
 
-    fwrite(buf.data, 1, buf.offset, file);
+            fwrite(&kv->key.n, 1, sizeof(kv->key.n), file);
+            fwrite(kv->key.data, 1, kv->key.n, file);
+            offset += kv->key.n + 4;
+            fwrite(&kv->type, 1, sizeof(kv->type), file);
+            offset += 4;
+            switch (kv->type) {
+                case GGUF_TYPE_UINT8:   fwrite(&kv->value.uint8,1,   sizeof(kv->value.uint8), file); offset += sizeof(kv->value.uint8); break;
+                case GGUF_TYPE_INT8:    fwrite (&kv->value.int8,1,    sizeof(kv->value.int8), file); offset += sizeof(kv->value.int8); break;
+                case GGUF_TYPE_UINT16:  fwrite (&kv->value.uint16,1,  sizeof(kv->value.uint16), file); offset += sizeof(kv->value.uint16); break;
+                case GGUF_TYPE_INT16:   fwrite (&kv->value.int16,1,   sizeof(kv->value.int16) , file ); offset += sizeof(kv->value.int16); break;
+                case GGUF_TYPE_UINT32:  fwrite (&kv->value.uint32,1,  sizeof(kv->value.uint32), file ); offset += sizeof(kv->value.uint32); break;
+                case GGUF_TYPE_INT32:   fwrite (&kv->value.int32,1,   sizeof(kv->value.int32) , file ); offset += sizeof(kv->value.int32); break;
+                case GGUF_TYPE_FLOAT32: fwrite (&kv->value.float32,1, sizeof(kv->value.float32), file); offset += sizeof(kv->value.float32); break;
+                case GGUF_TYPE_UINT64:  fwrite (&kv->value.uint64,1,  sizeof(kv->value.uint64), file ); offset += sizeof(kv->value.uint64); break;
+                case GGUF_TYPE_INT64:   fwrite (&kv->value.int64,1,   sizeof(kv->value.int64) , file ); offset += sizeof(kv->value.int64); break;
+                case GGUF_TYPE_FLOAT64: fwrite (&kv->value.float64,1, sizeof(kv->value.float64), file); offset += sizeof(kv->value.float64); break;
+                case GGUF_TYPE_BOOL:    fwrite (&kv->value.bool_,1,   sizeof(kv->value.bool_) , file ); offset += sizeof(kv->value.bool_); break;
+                case GGUF_TYPE_STRING: {
+                    fwrite(&kv->value.str.n, 1, sizeof(kv->value.str.n), file);
+                    fwrite(&kv->value.str.data, 1, kv->value.str.n, file);
+                    offset += (kv->value.str.n + sizeof(kv->value.str.n));
+                    break;
+                }
+                case GGUF_TYPE_ARRAY:
+                    {
+                        fwrite(&kv->value.arr.type, 1, sizeof(kv->value.arr.type), file);
+                        fwrite(&kv->value.arr.n,1,    sizeof(kv->value.arr.n), file);
+                        offset += sizeof(kv->value.arr.type) + sizeof(kv->value.arr.n);
 
-    gguf_buf_free(buf);
+                        switch (kv->value.arr.type) {
+                            case GGUF_TYPE_UINT8:
+                            case GGUF_TYPE_INT8:
+                            case GGUF_TYPE_UINT16:
+                            case GGUF_TYPE_INT16:
+                            case GGUF_TYPE_UINT32:
+                            case GGUF_TYPE_INT32:
+                            case GGUF_TYPE_FLOAT32:
+                            case GGUF_TYPE_UINT64:
+                            case GGUF_TYPE_INT64:
+                            case GGUF_TYPE_FLOAT64:
+                            case GGUF_TYPE_BOOL:
+                                {
+                                    fwrite(kv->value.arr.data, 1, kv->value.arr.n * GGUF_TYPE_SIZE[kv->value.arr.type], file);
+                                    offset += (kv->value.arr.n * GGUF_TYPE_SIZE[kv->value.arr.type]);
+                                } break;
+                            case GGUF_TYPE_STRING:
+                                {
+                                    for (uint32_t j = 0; j < kv->value.arr.n; ++j) {
+                                        struct gguf_str str = ((struct gguf_str *)kv->value.arr.data)[j];
+                                        fwrite(&str.n, 1, sizeof(str.n), file);
+                                        fwrite(&str.data, 1, str.n, file);
+                                        offset += (str.n + sizeof(str.n));
+                                    }
+                                } break;
+                            case GGUF_TYPE_ARRAY:
+                            case GGUF_TYPE_COUNT: GGML_ASSERT(false && "invalid type"); break;
+                        }
+                    } break;
+                case GGUF_TYPE_COUNT: GGML_ASSERT(false && "invalid type");
+            }
+        }
+
+        // write tensor infos
+        for (uint32_t i = 0; i < ctx->header.n_tensors; ++i) {
+            struct gguf_tensor_info * info = &ctx->infos[i];
+
+            fwrite(info->name.n, 1, sizeof(info->name.n), file);
+            fwrite(info->name.data, 1, info->name.n, file);
+            offset += info->name.n + sizeof(info->name.n);
+
+            fwrite(&info->n_dims, 1, sizeof(info->n_dims), file);
+            offset += sizeof(info->n_dims);
+            for (uint32_t j = 0; j < info->n_dims; ++j) {
+                fwrite(&info->ne[j], 1, sizeof(info->ne[j]), file);
+                offset += sizeof(info->ne[j]);
+            }
+            fwrite(&info->type, 1, sizeof(info->type), file);
+            offset += sizeof(info->type);
+            fwrite(&info->offset, 1, sizeof(info->offset), file);
+            offset += sizeof(info->offset);
+        }
+
+        // we require the data section to be aligned, so take into account any padding
+        {
+            const size_t offset_pad = GGML_PAD(offset, ctx->alignment);
+            const int cur_offset = offset;
+            if (offset_pad != cur_offset) {
+                uint8_t pad = 0;
+                for (size_t i = 0; i < offset_pad - cur_offset; ++i) {
+                    fwrite(&pad, 1, sizeof(pad), file);
+                    offset += sizeof(pad);
+                }
+            }
+        }
+
+        if (only_meta) {
+            return;
+        }
+
+        size_t offset_ = 0;
+
+        // write tensor data
+        for (uint32_t i = 0; i < ctx->header.n_tensors; ++i) {
+            struct gguf_tensor_info * info = &ctx->infos[i];
+
+            const size_t size     = info->size;
+            const size_t size_pad = GGML_PAD(size, ctx->alignment);
+
+            fwrite(info->data, 1, size, file);
+            offset += size;
+
+            if (size_pad != size) {
+                uint8_t pad = 0;
+                for (size_t j = 0; j < size_pad - size; ++j) {
+                    fwrite(&pad, 1, sizeof(pad), file);
+                    offset += sizeof(pad);
+                }
+            }
+
+            GGML_ASSERT(offset_ == info->offset);
+
+            offset_ += size_pad;
+        }
+    } else {
+        struct gguf_buf buf = gguf_buf_init(16*1024);
+
+        gguf_write_to_buf(ctx, &buf, only_meta);
+
+        fwrite(buf.data, 1, buf.offset, file);
+
+        gguf_buf_free(buf);
+    }
 
     fclose(file);
 }
