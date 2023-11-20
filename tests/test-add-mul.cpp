@@ -53,8 +53,9 @@ void load_model(test_model & model, bool use_gpu = false) {
     };
 
     // Initialize bdata // [2, 1, 1]
-    float bdata[2] = {
-        3, 6
+    float bdata[4] = {
+        3, 6,
+        4, 8
     };
 
     /*
@@ -124,7 +125,7 @@ void load_model(test_model & model, bool use_gpu = false) {
 
     // create tensors
     model.a = ggml_new_tensor_3d(model.ctx, GGML_TYPE_F32,  2, 2, 2);
-    model.b = ggml_new_tensor_3d(model.ctx, GGML_TYPE_F32, 2, 1, 1);
+    model.b = ggml_new_tensor_3d(model.ctx, GGML_TYPE_F32, 2, 2, 1);
 
     // create a allocator
     ggml_allocr * alloc = ggml_allocr_new_from_buffer(model.buffer);
@@ -170,7 +171,7 @@ struct ggml_cgraph * build_graph(const test_model& model, struct ggml_allocr * a
 
     struct ggml_cgraph  * gf = ggml_new_graph(ctx0);
 
-    struct ggml_tensor* result = ggml_add(ctx0, model.a, model.b);
+    struct ggml_tensor* result = ggml_pad(ctx0, model.a, 1, 1, 0, 0);
     ggml_build_forward_expand(gf, result);
 
     // delete the temporally context used to build the graph
