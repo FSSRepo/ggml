@@ -7611,14 +7611,14 @@ static void ggml_compute_forward_mul_f32(
     const int ith = params->ith;
     const int nth = params->nth;
 
-#ifdef GGML_USE_CLBLAST
-    if (src1->backend == GGML_BACKEND_GPU) {
-        if (ith == 0) {
-            ggml_cl_mul(src0, src1, dst);
-        }
-        return;
-    }
-#endif
+// #ifdef GGML_USE_CLBLAST
+//     if (src1->backend == GGML_BACKEND_GPU) {
+//         if (ith == 0) {
+//             ggml_cl_mul(src0, src1, dst);
+//         }
+//         return;
+//     }
+// #endif
 
     const int64_t nr = ggml_nrows(src0);
 
@@ -8319,6 +8319,7 @@ static void ggml_compute_forward_concat_f32(
     GGML_ASSERT(src0->nb[0] == sizeof(float));
 
     const int ith = params->ith;
+    const int nth = params->nth;
 
     GGML_TENSOR_BINARY_OP_LOCALS
 
@@ -8328,7 +8329,7 @@ static void ggml_compute_forward_concat_f32(
     GGML_ASSERT(nb10 == sizeof(float));
 
     for (int i3 = 0; i3 < ne3; i3++) {
-        for (int i2 = ith; i2 < ne2; i2++) {
+        for (int i2 = ith; i2 < ne2; i2 += nth) {
             if (i2 < ne02) { // src0
                 for (int i1 = 0; i1 < ne1; i1++) {
                     for (int i0 = 0; i0 < ne0; i0++) {
@@ -11882,6 +11883,7 @@ static void ggml_compute_forward_upscale_f32(
     GGML_ASSERT(src0->nb[0] == sizeof(float));
 
     const int ith = params->ith;
+    const int nth = params->nth;
 
     GGML_TENSOR_UNARY_OP_LOCALS
 
@@ -11890,7 +11892,7 @@ static void ggml_compute_forward_upscale_f32(
     // TODO: optimize
 
     for (int i03 = 0; i03 < ne03; i03++) {
-        for (int i02 = ith; i02 < ne02; i02++) {
+        for (int i02 = ith; i02 < ne02; i02 += nth) {
             for (int m = 0; m < dst->ne[1]; m++) {
                 int i01 = m / scale_factor;
                 for (int n = 0; n < dst->ne[0]; n++) {
