@@ -6344,10 +6344,10 @@ inline void ggml_cuda_op_add(
     GGML_ASSERT(src1->type == GGML_TYPE_F32);
 
     int axis_broadcast = dst->op_params[0];
-    bool broad_cast = axis_broadcast != -1;
-    int64_t ne_src =   broad_cast ? dst->ne[axis_broadcast] : 0;
-    int64_t ne0_dest = broad_cast ? dst->ne[dst->op_params[1]] : 0;
-    int64_t ne1_dest = broad_cast ? dst->ne[dst->op_params[2]] : 0;
+    bool broadcast = axis_broadcast != -1;
+    int64_t ne_src =   broadcast ? dst->ne[axis_broadcast] : 0;
+    int64_t ne0_dest = broadcast ? dst->ne[dst->op_params[1]] : 0;
+    int64_t ne1_dest = broadcast ? dst->ne[dst->op_params[2]] : 0;
     int64_t block_dest = ne0_dest * ne1_dest;
 
     if (src0->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32) {
@@ -6390,10 +6390,10 @@ inline void ggml_cuda_op_mul(
     GGML_ASSERT( dst->type == GGML_TYPE_F32);
 
     int axis_broadcast = dst->op_params[0];
-    bool broad_cast = axis_broadcast != -1;
-    int64_t ne_src =   broad_cast ? dst->ne[axis_broadcast] : 0;
-    int64_t ne0_dest = broad_cast ? dst->ne[dst->op_params[1]] : 0;
-    int64_t ne1_dest = broad_cast ? dst->ne[dst->op_params[2]] : 0;
+    bool broadcast = axis_broadcast != -1;
+    int64_t ne_src =   broadcast ? dst->ne[axis_broadcast] : 0;
+    int64_t ne0_dest = broadcast ? dst->ne[dst->op_params[1]] : 0;
+    int64_t ne1_dest = broadcast ? dst->ne[dst->op_params[2]] : 0;
     int64_t block_dest = ne0_dest * ne1_dest;
 
     mul_f32_cuda(src0_dd, src1_dd, dst_dd, ggml_nelements(dst), axis_broadcast, ne_src, ne0_dest, block_dest, main_stream);
