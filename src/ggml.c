@@ -12064,7 +12064,7 @@ static void ggml_compute_forward_flash_attn_f32(
 
     const float scale = 1.0f/sqrtf(D);
 
-    //printf("P=%d N=%d D=%d ir0=%d ir1=%d scale = %f\n", P, N, D, ir0, ir1, scale);
+    printf("P=%d N=%d D=%d ir0=%d ir1=%d scale = %f\n", P, N, D, ir0, ir1, scale);
 
     for (int ir = ir0; ir < ir1; ++ir) {
         // q indices

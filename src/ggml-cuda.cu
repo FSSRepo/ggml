@@ -4898,6 +4898,48 @@ static  __global__ void im2col_f32_f16(
     }
 }
 
+/*
+    Test FlashAttention implementation
+    along q->ne[1] for now
+*/
+
+static __global__ void flash_attn_f32(const float* q, const float* k,const float* v, float* cache, float* dst, float kq_scale,
+    int ne_q0, int ne_q1, int ne_q2, int ne_k0, int ne_k2, int ne_v0, int ne_v1, int ne_v2,
+    int nb_q2, int nb_k2, int nb_v2, int M, int N) {
+    int qy = threadIdx.x + blockIdx.x * blockDim.x;
+    for(int qz = 0; qz < ne_q2; qz++) {
+        float* scores = cache + qy * M;
+        // QK^T
+        float max_val = -INFINITY;
+        for(int i = 0; i < M; i++) {
+            int ky = qy % ne_k2;
+            for(int qx = 0; qx < ne_q0; qx++) {
+                scores[i] += q[qx + qy * ne_q0 + qz * nb_q2] * k[qx + i * ne_k0 + ky * nb_k2];
+            }
+            scores[i] *= kq_scale;
+            max_val = fmaxf(max_val, scores[i]);
+        }
+        // softmax(QK^T)
+        float sum = 0;
+        for(int i = 0; i < M;i ++) {
+            const float val = expf(scores[i] - max_val);
+            sum += val;
+        }
+        sum = 1.0f / sum;
+        for(int i = 0; i < M; i++) {
+            scores[i] *= sum;
+        }
+        // softmax(QK^T)V
+        for(int yv = 0; yv < ne_v1; yv++) {
+            int zv = qz % ne_v2;
+            int dst_idx = yv + qy * ne_q0 + qz * nb_q2;
+            for(int x = 0; x < M; x++) {
+                dst[dst_idx] += v[x + yv * ne_v0 + zv * nb_v2] * scores[x];
+            }
+        }
+    }
+}
+
 template<int qk, int qr, dequantize_kernel_t dq>
 static void get_rows_cuda(const void * x, const int32_t * y, float * dst, const int nrows, const int ncols, cudaStream_t stream) {
     const dim3 block_dims(CUDA_GET_ROWS_BLOCK_SIZE, 1, 1);
@@ -4936,6 +4978,20 @@ static void repeat_f32_cuda(const float * x, float * dst, const int ne_sd, const
     int max_block_size = k > CUDA_REPEAT_BLOCK_SIZE ? CUDA_REPEAT_BLOCK_SIZE : k;
     int num_iters = max_block_size == k ? 1 : ((k + max_block_size - 1) / max_block_size);
     repeat_f32<<<ne_sd, max_block_size, 0, stream>>>(x, dst, ne_rb, ne_id, source_dim, num_iters);
+}
+
+#define CUDA_FLASH_ATTN_BLOCK_SIZE 256
+
+static void flash_attn_f32_cuda(const float* q, const float* k,const float* v, float* cache, float* dst, float kq_scale,
+    int ne_q0, int ne_q1, int ne_q2, int ne_k0, int ne_k1, int ne_k2, int ne_v0, int ne_v1, int ne_v2,
+    int nb_q2, int nb_k2, int nb_v2, int M, int N, cudaStream_t stream) {
+    const int num_blocks = (ne_q1 + CUDA_FLASH_ATTN_BLOCK_SIZE - 1) / CUDA_FLASH_ATTN_BLOCK_SIZE;
+    flash_attn_f32<<<num_blocks, CUDA_FLASH_ATTN_BLOCK_SIZE, 0, stream>>>(
+            q, k, v, cache, dst, // pointers
+            kq_scale, // scale
+            ne_q0, ne_q1, ne_q2, ne_k0, ne_k2, ne_v0, ne_v1, ne_v2, // ne elements
+            nb_q2, nb_k2, nb_v2, // strides
+            M, N);
 }
 
 static void relu_f32_cuda(const float * x, float * dst, const int k, cudaStream_t stream) {
@@ -6441,6 +6497,62 @@ inline void ggml_cuda_op_gelu_quick(
     (void) src1;
     (void) dst;
     (void) src1_dd;
+}
+
+inline void ggml_cuda_flash_attn(const ggml_tensor * Q, const ggml_tensor * K, const ggml_tensor * V, ggml_tensor * KQV) {
+    GGML_ASSERT(Q->type == GGML_TYPE_F32);
+    GGML_ASSERT(K->type == GGML_TYPE_F32);
+    GGML_ASSERT(V->type == GGML_TYPE_F32);
+    GGML_ASSERT(KQV->type == GGML_TYPE_F32);
+
+    GGML_ASSERT(Q->backend == GGML_BACKEND_GPU);
+    GGML_ASSERT(K->backend == GGML_BACKEND_GPU);
+    GGML_ASSERT(V->backend == GGML_BACKEND_GPU);
+    GGML_ASSERT(KQV->backend == GGML_BACKEND_GPU);
+
+    ggml_cuda_set_device(g_main_device);
+    const cudaStream_t main_stream = g_cudaStreams[g_main_device][0];
+
+    ggml_tensor_extra_gpu * src0_extra = (ggml_tensor_extra_gpu *) Q->extra;
+    ggml_tensor_extra_gpu * src1_extra = (ggml_tensor_extra_gpu *) K->extra;
+    ggml_tensor_extra_gpu * src2_extra = (ggml_tensor_extra_gpu *) V->extra;
+    ggml_tensor_extra_gpu * dst_extra  = (ggml_tensor_extra_gpu *) KQV->extra;
+
+    const int64_t D = Q->ne[0];
+    const int64_t N = Q->ne[1];
+    const int64_t P = K->ne[1] - N;
+    const int64_t M = P + N;
+
+    GGML_ASSERT(Q->ne[0] == D);
+    GGML_ASSERT(K->ne[0] == D);
+    GGML_ASSERT(V->ne[1] == D);
+
+    GGML_ASSERT(Q->ne[1] == N);
+    GGML_ASSERT(K->ne[1] == N + P);
+    GGML_ASSERT(V->ne[1] == D);
+
+    float* cache;
+    cudaMallocAsync(&cache, (size_t)(M * N), main_stream);
+    cudaMemsetAsync(&cache, 0, (size_t)(M * N), main_stream);
+
+    float KQ_scale = 1.0f / sqrt(Q->ne[0]);
+
+    printf("CUDA FlashAttention: P=%d N=%d D=%d scale = %f\n", P, N, D, KQ_scale);
+
+    flash_attn_f32_cuda(
+        (float *) src0_extra->data_device[g_main_device], // Q
+        (float *) src1_extra->data_device[g_main_device], // K
+        (float *) src2_extra->data_device[g_main_device], // V
+        cache,
+        (float *) dst_extra->data_device[g_main_device], // dst
+        KQ_scale,
+        Q->ne[0], Q->ne[1], Q->ne[2], // Q ne
+        K->ne[0], K->ne[1], K->ne[2], // K ne
+        V->ne[0], V->ne[1], V->ne[2], // V ne
+        Q->nb[2] / 4, K->nb[2] / 4, V->nb[2] / 4,
+        M, N, main_stream);
+
+    cudaFreeAsync(cache, main_stream);
 }
 
 inline void ggml_cuda_op_relu(
@@ -8443,6 +8555,8 @@ bool ggml_cuda_compute_forward(struct ggml_compute_params * params, struct ggml_
         case GGML_OP_IM2COL:
             func = ggml_cuda_im2col;
             break;
+        case GGML_OP_FLASH_ATTN:
+            break;
         default:
             return false;
     }
@@ -8465,7 +8579,11 @@ bool ggml_cuda_compute_forward(struct ggml_compute_params * params, struct ggml_
 
     int64_t start = ggml_time_us();
 #endif
-    func(tensor->src[0], tensor->src[1], tensor);
+    if(tensor->op == GGML_OP_FLASH_ATTN) {
+        ggml_cuda_flash_attn(tensor->src[0], tensor->src[1], tensor->src[2], tensor);
+    } else  {
+        func(tensor->src[0], tensor->src[1], tensor);
+    }
 #ifdef CUDA_BENCHMARK
     cudaStreamSynchronize(g_cudaStreams[g_main_device][0]);
     op_timings[tensor->op] += (ggml_time_us() - start);
