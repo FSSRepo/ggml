@@ -2,7 +2,7 @@
 #include "ggml/ggml-alloc.h"
 #include "ggml/ggml-backend.h"
 
-#define GGML_USE_CUBLAS
+// #define GGML_USE_CUBLAS
 
 #ifdef GGML_USE_CUBLAS
 #include "ggml-cuda.h"
@@ -171,7 +171,7 @@ struct ggml_cgraph * build_graph(const test_model& model, struct ggml_allocr * a
 
     struct ggml_cgraph  * gf = ggml_new_graph(ctx0);
 
-    struct ggml_tensor* result = ggml_pad(ctx0, model.a, 1, 1, 0, 0);
+    struct ggml_tensor* result = ggml_add(ctx0, model.a, model.b);
     ggml_build_forward_expand(gf, result);
 
     // delete the temporally context used to build the graph
