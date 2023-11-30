@@ -42,20 +42,18 @@ float ggml_tensor_get_f32(const ggml_tensor* tensor, int l, int k = 0, int j = 0
 
 void load_model(test_model & model, bool use_gpu = false) {
 
-    float Query[30] = { // [3, 5, 2]
-        // z0
-        2, 4, 2,
-        4, 2, 1,
-        4, 1, 3,
-        4, 2, 2,
-        4, 3, 3,
+    float Query[30] = { // [3, 4, 2]
+                // z0
+                2, 4, 2,
+                4, 2, 1,
+                4, 1, 3,
+                4, 2, 2,
 
-        // z1
-        2, 1, 1,
-        4, 2, 1,
-        1, 1, 3,
-        4, 2, 1,
-        1, 3, 3,
+                // z1
+                2, 1, 1,
+                4, 2, 1,
+                1, 1, 3,
+                4, 2, 1
     };
 
     float Key[24] = { // [3, 4, 2]
@@ -125,7 +123,7 @@ void load_model(test_model & model, bool use_gpu = false) {
     model.ctx = ggml_init(params);
 
     // create tensors
-    model.q = ggml_new_tensor_3d(model.ctx, GGML_TYPE_F32, 3, 5, 2);
+    model.q = ggml_new_tensor_3d(model.ctx, GGML_TYPE_F32, 3, 4, 2);
     model.k = ggml_new_tensor_3d(model.ctx, GGML_TYPE_F32, 3, 4, 2);
     model.v = ggml_new_tensor_3d(model.ctx, GGML_TYPE_F32, 4, 3, 2);
 
@@ -136,7 +134,6 @@ void load_model(test_model & model, bool use_gpu = false) {
     ggml_allocr_alloc(alloc, model.q);
     ggml_allocr_alloc(alloc, model.k);
     ggml_allocr_alloc(alloc, model.v);
-
 
     ggml_backend_tensor_set(model.q, Query, 0, ggml_nbytes(model.q));
     ggml_backend_tensor_set(model.k, Key, 0, ggml_nbytes(model.k));
@@ -222,21 +219,8 @@ int main(void)
         if(i > 0 && (i % result->ne[0] == 0)) {
             printf("\n");
         }
-        printf("%2.2f ", data[i]);
+        printf("%2.6f ", data[i]);
     }
-
-/*
-    2.05 2.44 1.31
-    2.46 3.23 2.42
-    2.06 3.90 2.06
-    2.18 3.68 2.15
-    2.06 3.81 2.01
-    1.90 1.69 2.96
-    1.70 1.77 3.19
-    1.27 1.88 1.57
-    1.70 1.77 3.19
-    1.32 1.88 2.47
-*/
 
     ggml_free(model.ctx);
 

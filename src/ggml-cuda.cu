@@ -4898,46 +4898,94 @@ static  __global__ void im2col_f32_f16(
     }
 }
 
-/*
-    Test FlashAttention implementation
-    along q->ne[1] for now
-*/
-
-static __global__ void flash_attn_f32(const float* q, const float* k,const float* v, float* cache, float* dst, float kq_scale,
-    int ne_q0, int ne_q1, int ne_q2, int ne_k0, int ne_k2, int ne_v0, int ne_v1, int ne_v2,
-    int nb_q2, int nb_k2, int nb_v2, int M, int N) {
-    int qy = threadIdx.x + blockIdx.x * blockDim.x;
-    for(int qz = 0; qz < ne_q2; qz++) {
-        float* scores = cache + qy * M;
-        // QK^T
-        float max_val = -INFINITY;
-        for(int i = 0; i < M; i++) {
-            int ky = qy % ne_k2;
-            for(int qx = 0; qx < ne_q0; qx++) {
-                scores[i] += q[qx + qy * ne_q0 + qz * nb_q2] * k[qx + i * ne_k0 + ky * nb_k2];
-            }
-            scores[i] *= kq_scale;
-            max_val = fmaxf(max_val, scores[i]);
-        }
-        // softmax(QK^T)
-        float sum = 0;
-        for(int i = 0; i < M;i ++) {
-            const float val = expf(scores[i] - max_val);
-            sum += val;
-        }
-        sum = 1.0f / sum;
-        for(int i = 0; i < M; i++) {
-            scores[i] *= sum;
-        }
-        // softmax(QK^T)V
-        for(int yv = 0; yv < ne_v1; yv++) {
-            int zv = qz % ne_v2;
-            int dst_idx = yv + qy * ne_q0 + qz * nb_q2;
-            for(int x = 0; x < M; x++) {
-                dst[dst_idx] += v[x + yv * ne_v0 + zv * nb_v2] * scores[x];
-            }
-        }
+static __device__ __forceinline__ float warp_reduce_max(float x) {
+#pragma unroll
+    for (int mask = 16; mask > 0; mask >>= 1) {
+        x = fmaxf(__shfl_xor_sync(0xffffffff, x, mask, 32), x);
     }
+    return x;
+}
+
+#define CUDA_FLASH_ATTENTION_BLOCK_SIZE 256
+
+template<int block_size>
+static __global__ void flash_attn_f32(const float* q, const float* k,const float* v, float* dst, float kq_scale,
+        int d_head, int seq_len, int num_heads) {
+        const int head = blockIdx.x / seq_len;
+        const int head_size = d_head * seq_len;
+        const int s = blockIdx.x % seq_len;
+        const int tid = threadIdx.x;
+
+        extern __shared__  char work_data[];
+        float* S = (float*)work_data; // theorical sequent length: 12848, due memory per block limit
+        float* warp_data = (float*)(work_data + seq_len * sizeof(float));
+
+        // QK^T
+        for(int is = tid; is < seq_len; is += block_size) {
+                S[is] = 0.0f;
+                int key_offset = is * d_head + head * head_size;
+                int query_offset = s * d_head + head * head_size;
+                for(int d = 0; d < d_head; d++) {
+                        S[is] += k[key_offset + d] * q[query_offset + d];
+                }
+                S[is] *= kq_scale;
+        }
+
+        __syncthreads();
+
+        float max_val = -INFINITY;
+        // get the max
+        for(int is = tid; is < seq_len; is += block_size) {
+                max_val = fmaxf(max_val , S[is]);
+        }
+
+        max_val = warp_reduce_max(max_val);
+        { // get max from all threads
+            int warp_id = threadIdx.x / WARP_SIZE;
+            int lane_id = threadIdx.x % WARP_SIZE;
+            if (lane_id == 0) {
+                warp_data[warp_id] = max_val;
+            }
+            __syncthreads();
+            max_val = warp_data[lane_id];
+            max_val = warp_reduce_max(max_val);
+        }
+
+        // softmax(QK^T)
+        float sum = 0.0f;
+        for(int is = tid; is < seq_len;is += block_size) {
+                const float val = expf(S[is] - max_val);
+                S[is] = val;
+                sum += val;
+        }
+
+        sum = warp_reduce_sum(sum);
+        { // sum partials
+            int warp_id = threadIdx.x / WARP_SIZE;
+            int lane_id = threadIdx.x % WARP_SIZE;
+            if (lane_id == 0) {
+                warp_data[warp_id] = sum;
+            }
+            __syncthreads();
+            sum = warp_data[lane_id];
+            sum = warp_reduce_sum(sum);
+        }
+
+        float inv_sum = 1.0f / sum;
+        for(int is = tid; is < seq_len; is += block_size) {
+                S[is] *= inv_sum;
+        }
+
+        __syncthreads();
+        // softmax(QK^T)V
+        for (int d = tid; d < d_head; d += block_size) {
+                int dst_index = d + s * d_head + head * head_size;
+                int value_offset = d * seq_len +   head * head_size;
+                dst[dst_index] = 0.0f;
+                for(int ic = 0; ic < seq_len; ic++) {
+                        dst[dst_index] += v[value_offset + ic] * S[ic];
+                }
+        }
 }
 
 template<int qk, int qr, dequantize_kernel_t dq>
@@ -4980,18 +5028,11 @@ static void repeat_f32_cuda(const float * x, float * dst, const int ne_sd, const
     repeat_f32<<<ne_sd, max_block_size, 0, stream>>>(x, dst, ne_rb, ne_id, source_dim, num_iters);
 }
 
-#define CUDA_FLASH_ATTN_BLOCK_SIZE 256
-
-static void flash_attn_f32_cuda(const float* q, const float* k,const float* v, float* cache, float* dst, float kq_scale,
-    int ne_q0, int ne_q1, int ne_q2, int ne_k0, int ne_k1, int ne_k2, int ne_v0, int ne_v1, int ne_v2,
-    int nb_q2, int nb_k2, int nb_v2, int M, int N, cudaStream_t stream) {
-    const int num_blocks = (ne_q1 + CUDA_FLASH_ATTN_BLOCK_SIZE - 1) / CUDA_FLASH_ATTN_BLOCK_SIZE;
-    flash_attn_f32<<<num_blocks, CUDA_FLASH_ATTN_BLOCK_SIZE, 0, stream>>>(
-            q, k, v, cache, dst, // pointers
-            kq_scale, // scale
-            ne_q0, ne_q1, ne_q2, ne_k0, ne_k2, ne_v0, ne_v1, ne_v2, // ne elements
-            nb_q2, nb_k2, nb_v2, // strides
-            M, N);
+static void flash_attn_f32_cuda(const float* q, const float* k,const float* v, float* dst, float kq_scale, const int d_head, const int seq_len, const int num_heads, cudaStream_t stream) {
+    int sram_memory_size = seq_len*sizeof(float) + WARP_SIZE * sizeof(float);
+    int num_blocks = num_heads * seq_len;
+    flash_attn_f32<CUDA_FLASH_ATTENTION_BLOCK_SIZE><<<num_blocks, CUDA_FLASH_ATTENTION_BLOCK_SIZE, sram_memory_size, stream>>>(
+            q, k, v, dst, kq_scale, d_head, seq_len, num_heads);
 }
 
 static void relu_f32_cuda(const float * x, float * dst, const int k, cudaStream_t stream) {
@@ -6518,41 +6559,30 @@ inline void ggml_cuda_flash_attn(const ggml_tensor * Q, const ggml_tensor * K, c
     ggml_tensor_extra_gpu * src2_extra = (ggml_tensor_extra_gpu *) V->extra;
     ggml_tensor_extra_gpu * dst_extra  = (ggml_tensor_extra_gpu *) KQV->extra;
 
-    const int64_t D = Q->ne[0];
-    const int64_t N = Q->ne[1];
-    const int64_t P = K->ne[1] - N;
-    const int64_t M = P + N;
+    const int64_t d_head =          Q->ne[0];
+    const int64_t sequence_length = Q->ne[1];
+    const int64_t num_heads =       Q->ne[2];
 
-    GGML_ASSERT(Q->ne[0] == D);
-    GGML_ASSERT(K->ne[0] == D);
-    GGML_ASSERT(V->ne[1] == D);
+    GGML_ASSERT(Q->ne[0] == d_head);
+    GGML_ASSERT(K->ne[0] == d_head);
+    GGML_ASSERT(V->ne[1] == d_head);
 
-    GGML_ASSERT(Q->ne[1] == N);
-    GGML_ASSERT(K->ne[1] == N + P);
-    GGML_ASSERT(V->ne[1] == D);
+    GGML_ASSERT(Q->ne[1] == sequence_length);
+    GGML_ASSERT(K->ne[1] == sequence_length);
+    GGML_ASSERT(V->ne[0] == sequence_length);
 
-    float* cache;
-    cudaMallocAsync(&cache, (size_t)(M * N), main_stream);
-    cudaMemsetAsync(&cache, 0, (size_t)(M * N), main_stream);
+    GGML_ASSERT(Q->ne[2] == num_heads);
+    GGML_ASSERT(K->ne[2] == num_heads);
+    GGML_ASSERT(V->ne[2] == num_heads);
 
-    float KQ_scale = 1.0f / sqrt(Q->ne[0]);
-
-    printf("CUDA FlashAttention: P=%d N=%d D=%d scale = %f\n", P, N, D, KQ_scale);
+    float KQ_scale = 1.0f / sqrtf((float)d_head);
 
     flash_attn_f32_cuda(
-        (float *) src0_extra->data_device[g_main_device], // Q
-        (float *) src1_extra->data_device[g_main_device], // K
-        (float *) src2_extra->data_device[g_main_device], // V
-        cache,
+        (float *) src0_extra->data_device[g_main_device], // Query
+        (float *) src1_extra->data_device[g_main_device], // Key
+        (float *) src2_extra->data_device[g_main_device], // Value
         (float *) dst_extra->data_device[g_main_device], // dst
-        KQ_scale,
-        Q->ne[0], Q->ne[1], Q->ne[2], // Q ne
-        K->ne[0], K->ne[1], K->ne[2], // K ne
-        V->ne[0], V->ne[1], V->ne[2], // V ne
-        Q->nb[2] / 4, K->nb[2] / 4, V->nb[2] / 4,
-        M, N, main_stream);
-
-    cudaFreeAsync(cache, main_stream);
+        KQ_scale, d_head, sequence_length, num_heads, main_stream);
 }
 
 inline void ggml_cuda_op_relu(
