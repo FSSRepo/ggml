@@ -59,6 +59,8 @@ option(GGML_CUDA_F16                        "ggml: use 16 bit floats for some ca
 set(GGML_CUDA_KQUANTS_ITER "2" CACHE STRING "ggml: iters./thread per block for Q2_K/Q6_K")
 set(GGML_CUDA_PEER_MAX_BATCH_SIZE "128" CACHE STRING
                                             "ggml: max. batch size for using peer access")
+option(GGML_CONV2D_FUSED              "ggml: when use GPU backend uses conv2d fused kernel"   OFF)
+
 # sanitizers
 
 if (GGML_SANITIZE_THREAD)

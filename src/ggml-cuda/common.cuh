@@ -271,7 +271,6 @@ static __device__ __forceinline__ float2 warp_reduce_sum(float2 a) {
     return a;
 }
 
-#ifdef GGML_CUDA_F16
 static __device__ __forceinline__ half2 warp_reduce_sum(half2 a) {
 #if !(defined(GGML_USE_HIPBLAS) && defined(__HIP_PLATFORM_AMD__)) && __CUDA_ARCH__ >= CC_PASCAL
 #pragma unroll
@@ -284,7 +283,6 @@ static __device__ __forceinline__ half2 warp_reduce_sum(half2 a) {
    NO_DEVICE_CODE;
 #endif // !(defined(GGML_USE_HIPBLAS) && defined(__HIP_PLATFORM_AMD__)) && __CUDA_ARCH__ >= CC_PASCAL
 }
-#endif // GGML_CUDA_F16
 
 static __device__ __forceinline__ float warp_reduce_max(float x) {
 #pragma unroll
@@ -294,18 +292,18 @@ static __device__ __forceinline__ float warp_reduce_max(float x) {
     return x;
 }
 
-//static __device__ __forceinline__ half2 warp_reduce_max(half2 x) {
-//#if !(defined(GGML_USE_HIPBLAS) && defined(__HIP_PLATFORM_AMD__)) && __CUDA_ARCH__ >= CC_PASCAL && CUDART_VERSION >= CUDART_HMAX
-//#pragma unroll
-//    for (int mask = 16; mask > 0; mask >>= 1) {
-//        x = __hmax2(x, __shfl_xor_sync(0xffffffff, x, mask, 32));
-//    }
-//    return x;
-//#else
-//    GGML_UNUSED(x);
-//    NO_DEVICE_CODE;
-//#endif // !(defined(GGML_USE_HIPBLAS) && defined(__HIP_PLATFORM_AMD__)) && __CUDA_ARCH__ >= CC_PASCAL && CUDART_VERSION >= CUDART_HMAX
-//}
+static __device__ __forceinline__ half2 warp_reduce_max(half2 x) {
+#if !(defined(GGML_USE_HIPBLAS) && defined(__HIP_PLATFORM_AMD__)) && __CUDA_ARCH__ >= CC_PASCAL && CUDART_VERSION >= CUDART_HMAX
+#pragma unroll
+   for (int mask = 16; mask > 0; mask >>= 1) {
+       x = __hmax2(x, __shfl_xor_sync(0xffffffff, x, mask, 32));
+   }
+   return x;
+#else
+   GGML_UNUSED(x);
+   NO_DEVICE_CODE;
+#endif // !(defined(GGML_USE_HIPBLAS) && defined(__HIP_PLATFORM_AMD__)) && __CUDA_ARCH__ >= CC_PASCAL && CUDART_VERSION >= CUDART_HMAX
+}
 
 
 #if defined(GGML_USE_HIPBLAS)
@@ -391,6 +389,9 @@ static __device__ __forceinline__ int __dp4a(const int a, const int b, int c) {
 }
 #endif // defined(GGML_USE_HIPBLAS)
 
+#define FP16_MMA_AVAILABLE defined(GGML_USE_HIPBLAS) && defined(__HIP_PLATFORM_AMD__) ? \
+                                        defined(RDNA3) : __CUDA_ARCH__ >= CC_VOLTA
+
 // TODO: move to ggml-common.h
 static const __device__ int8_t kvalues_iq4nl[16] = {-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113};
 
@@ -404,6 +405,7 @@ struct ggml_cuda_device_info {
 
     struct cuda_device_info {
         int     cc;                 // compute capability
+        int     nsm;                // number of streaming multiprocessors
         size_t  smpb;               // max. shared memory per block
         bool    vmm;                // virtual memory support
         size_t  vmm_granularity;    // granularity of virtual memory

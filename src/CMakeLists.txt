@@ -256,6 +256,10 @@ if (GGML_CUDA)
     endif()
 endif()
 
+if(GGML_CONV2D_FUSED)
+    add_compile_definitions(GGML_USE_CONV2D_FUSED)
+endif()
+
 # TODO: do not build separate ggml-rocm target (see CUDA build above, or llama.cpp for reference)
 if (GGML_HIPBLAS)
     list(APPEND CMAKE_PREFIX_PATH /opt/rocm)

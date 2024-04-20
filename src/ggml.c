@@ -1996,6 +1996,7 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "CLAMP",
     "CONV_TRANSPOSE_1D",
     "IM2COL",
+    "CONV_2D_FUSED",
     "CONV_TRANSPOSE_2D",
     "POOL_1D",
     "POOL_2D",
@@ -2007,6 +2008,7 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "LEAKY_RELU",
 
     "FLASH_ATTN",
+    "FLASH_ATTN_EXT",
     "FLASH_FF",
     "FLASH_ATTN_BACK",
     "SSM_CONV",
@@ -2033,7 +2035,7 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "CROSS_ENTROPY_LOSS_BACK",
 };
 
-static_assert(GGML_OP_COUNT == 76, "GGML_OP_COUNT != 76");
+static_assert(GGML_OP_COUNT == 78, "GGML_OP_COUNT != 78");
 
 static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "none",
@@ -2086,6 +2088,7 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "clamp(x)",
     "conv_transpose_1d(x)",
     "im2col(x)",
+    "conv_2d_fused(x)",
     "conv_transpose_2d(x)",
     "pool_1d(x)",
     "pool_2d(x)",
@@ -2097,6 +2100,7 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "leaky_relu(x)",
 
     "flash_attn(x)",
+    "flash_attn_ext(x)",
     "flash_ff(x)",
     "flash_attn_back(x)",
     "ssm_conv(x)",
@@ -2123,7 +2127,7 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "cross_entropy_loss_back(x,y)",
 };
 
-static_assert(GGML_OP_COUNT == 76, "GGML_OP_COUNT != 76");
+static_assert(GGML_OP_COUNT == 78, "GGML_OP_COUNT != 78");
 
 static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
 
@@ -5892,18 +5896,44 @@ struct ggml_tensor * ggml_conv_2d(
         int                  p1,
         int                  d0,
         int                  d1) {
-    struct ggml_tensor * im2col = ggml_im2col(ctx, a, b, s0, s1, p0, p1, d0, d1, true, GGML_TYPE_F16); // [N, OH, OW, IC * KH * KW]
+#if defined(GGML_USE_CUDA) && defined(GGML_USE_CONV2D_FUSED)
+    // fused kernel requires 16x16 tiles to fit in tensor cores
+    if(
+        b->ne[0] < 128 && b->ne[1] < 128 || // low overhead
+        b->ne[0] % 16 != 0 || b->ne[1] % 16 != 0 || b->ne[2] % 16 != 0 || a->ne[3] % 16 != 0) {
+#endif
+        struct ggml_tensor * im2col = ggml_im2col(ctx, a, b, s0, s1, p0, p1, d0, d1, true, GGML_TYPE_F16); // [N, OH, OW, IC * KH * KW]
 
-    struct ggml_tensor * result =
-        ggml_mul_mat(ctx,
-                ggml_reshape_2d(ctx, im2col, im2col->ne[0],  im2col->ne[3] * im2col->ne[2] * im2col->ne[1]), // [N, OH, OW, IC * KH * KW] => [N*OH*OW, IC * KH * KW]
-                ggml_reshape_2d(ctx, a, (a->ne[0] * a->ne[1] * a->ne[2]),  a->ne[3]));                       // [OC，IC, KH, KW] => [OC, IC * KH * KW]
+        struct ggml_tensor * result = ggml_mul_mat(ctx,
+                    ggml_reshape_2d(ctx, im2col, im2col->ne[0],  im2col->ne[3] * im2col->ne[2] * im2col->ne[1]), // [N, OH, OW, IC * KH * KW] => [N*OH*OW, IC * KH * KW]
+                    ggml_reshape_2d(ctx, a, (a->ne[0] * a->ne[1] * a->ne[2]),  a->ne[3]));                       // [OC，IC, KH, KW] => [OC, IC * KH * KW]
 
-    result = ggml_reshape_4d(ctx, result, im2col->ne[1], im2col->ne[2], im2col->ne[3], a->ne[3]); // [OC, N, OH, OW]
-    result = ggml_cont(ctx, ggml_permute(ctx, result, 0, 1, 3, 2)); // [N, OC, OH, OW]
+        result = ggml_reshape_4d(ctx, result, im2col->ne[1], im2col->ne[2], im2col->ne[3], a->ne[3]); // [OC, N, OH, OW]
+        return  ggml_cont(ctx, ggml_permute(ctx, result, 0, 1, 3, 2)); // [N, OC, OH, OW]
+#if defined(GGML_USE_CUDA) && defined(GGML_USE_CONV2D_FUSED)
+    }
 
+    bool is_node = false;
 
+    if (a->grad || b->grad) {
+        GGML_ASSERT(false); // TODO: implement backward
+        is_node = true;
+    }
+
+    // special operator fuses im2col and gemm to reduce memory usage, but decreases performance
+    const int64_t OW = ggml_calc_conv_output_size(b->ne[0], a->ne[0], s0, p0, d0);
+    const int64_t OH = ggml_calc_conv_output_size(b->ne[1], a->ne[1], s1, p1, d1);
+
+    struct ggml_tensor * result = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, OW, OH, a->ne[3], b->ne[3]);
+    int32_t params[] = { s0, s1, p0, p1, d0, d1 };
+    ggml_set_op_params(result, params, sizeof(params));
+
+    result->op = GGML_OP_CONV_2D_FUSED;
+    result->grad = is_node ? ggml_dup_tensor(ctx, result) : NULL;
+    result->src[0] = a;
+    result->src[1] = b;
     return result;
+#endif
 }
 
 // ggml_conv_2d_sk_p0
@@ -6180,6 +6210,60 @@ struct ggml_tensor * ggml_top_k(
                 0);
 
     return result;
+}
+
+
+// ggml_flash_attn_ext
+
+struct ggml_tensor * ggml_flash_attn_ext(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * q,
+        struct ggml_tensor  * k,
+        struct ggml_tensor  * v,
+        struct ggml_tensor  * mask,
+        float                 scale) {
+    GGML_ASSERT(ggml_can_mul_mat(k, q));
+    // TODO: check if vT can be multiplied by (k*qT)
+    if (mask) {
+        GGML_ASSERT(ggml_is_contiguous(mask));
+        GGML_ASSERT(mask->ne[2] == 1);
+        GGML_ASSERT(mask->ne[3] == 1);
+        // GGML_ASSERT(mask->ne[1] >= GGML_PAD(q->ne[1], GGML_KQ_MASK_PAD) &&
+        //         "the Flash-Attention kernel requires the mask to be padded to GGML_KQ_MASK_PAD and at least n_queries big");
+        //GGML_ASSERT(ggml_can_repeat_rows(mask, qk));
+    }
+
+    bool is_node = false;
+
+    if (q->grad || k->grad || v->grad) {
+        is_node = true;
+    }
+
+    // permute(0, 2, 1, 3)
+    int64_t ne[4] = { q->ne[0], q->ne[2], q->ne[1], q->ne[3] };
+    struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, GGML_MAX_DIMS, ne);
+
+    float params[] = { scale };
+    ggml_set_op_params(result, params, sizeof(params));
+
+    result->op   = GGML_OP_FLASH_ATTN_EXT;
+    result->grad = is_node ? ggml_dup_tensor(ctx, result) : NULL;
+    result->src[0] = q;
+    result->src[1] = k;
+    result->src[2] = v;
+    result->src[3] = mask;
+
+    return result;
+}
+
+void ggml_flash_attn_ext_set_prec(
+        struct ggml_tensor * a,
+        enum ggml_prec       prec) {
+    GGML_ASSERT(a->op == GGML_OP_FLASH_ATTN_EXT);
+
+    const int32_t prec_i32 = (int32_t) prec;
+
+    ggml_set_op_params_i32(a, 1, prec_i32); // scale is on first pos
 }
 
 // ggml_flash_attn
