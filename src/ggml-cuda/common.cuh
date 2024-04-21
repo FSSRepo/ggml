@@ -271,6 +271,20 @@ static __device__ __forceinline__ float2 warp_reduce_sum(float2 a) {
     return a;
 }
 
+#if CUDART_VERSION < 12000
+static __device__ __forceinline__ uint __hgt2_mask(const half2 a, const half2 b) {
+#if !(defined(GGML_USE_HIPBLAS) && defined(__HIP_PLATFORM_AMD__)) && __CUDA_ARCH__ >= CC_PASCAL
+    const uint mask_low  = 0x0000FFFF * ( __low2half(a) >  __low2half(b));
+    const uint mask_high = 0xFFFF0000 * (__high2half(a) > __high2half(b));
+    return mask_low | mask_high;
+#else
+   GGML_UNUSED(a);
+   GGML_UNUSED(b);
+   NO_DEVICE_CODE;
+#endif // !(defined(GGML_USE_HIPBLAS) && defined(__HIP_PLATFORM_AMD__)) && __CUDA_ARCH__ >= CC_PASCAL
+}
+#endif // CUDART_VERSION < 12000
+
 static __device__ __forceinline__ half2 warp_reduce_sum(half2 a) {
 #if !(defined(GGML_USE_HIPBLAS) && defined(__HIP_PLATFORM_AMD__)) && __CUDA_ARCH__ >= CC_PASCAL
 #pragma unroll
